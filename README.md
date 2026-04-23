@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Agents for Humanity — web app (Phase 1 foundations)
 
-## Getting Started
+Next.js app for **agentsforhumanity.ai**. Product and build specs live one level up in `../Project FIles/`.
 
-First, run the development server:
+## Prerequisites
+
+- Node.js 20+ (LTS recommended)
+- npm
+- A Postgres URL ([Supabase](https://supabase.com) or [Neon](https://neon.tech))
+- A [Clerk](https://clerk.com) application (dev keys are fine)
+
+## Local setup
 
 ```bash
+cd app
+cp .env.example .env.local
+# Edit .env.local: DATABASE_URL, Clerk keys, Supabase URL + anon key
+
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). Use **Sign in** to verify Clerk.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- [http://localhost:3000/api/health/db](http://localhost:3000/api/health/db): DB connectivity
+- [http://localhost:3000/api/health/rls](http://localhost:3000/api/health/rls): Clerk-to-Supabase JWT mapping (`auth.jwt()` / RLS context)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Clerk + Supabase RLS mapping
 
-## Learn More
+RLS owner policies now key off Clerk user identity via `users.clerk_user_id = auth.jwt()->>'sub'`.
 
-To learn more about Next.js, take a look at the following resources:
+Required one-time Clerk setup:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. In Clerk dashboard, create a JWT template named `supabase` (or set `CLERK_SUPABASE_JWT_TEMPLATE`).
+2. Ensure the template includes:
+   - `role: "authenticated"`
+   - `sub: "{{user.id}}"`
+   - `aud: "authenticated"` (recommended)
+3. On first sign-in, insert/update a row in `users` with `clerk_user_id = Clerk user id`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Without this template, `/api/health/rls` will report token/template errors.
 
-## Deploy on Vercel
+## Scripts
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Script        | Purpose                          |
+| ------------- | -------------------------------- |
+| `npm run dev` | Local development server         |
+| `npm run build` | Production build              |
+| `npm run start` | Run production build locally  |
+| `npm run lint`  | ESLint                        |
+| `npm run typecheck` | TypeScript `--noEmit`     |
+| `npm run db:push` | Apply schema with Drizzle Kit (optional in Phase 0) |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Database (optional Phase 0 migration)
+
+The API health check only runs `SELECT 1` and does not require tables. To sync the minimal `app_config` table for Drizzle Kit wiring:
+
+```bash
+npx drizzle-kit push
+```
+
+Use a dev database; follow Row Level Security practices in Phase 1.
+
+## Security
+
+- Do not put `SUPABASE_SERVICE_ROLE` or similar secrets in `NEXT_PUBLIC_*` or client code.
+- After `npm run build`, skim the bundle for accidental key material (see developer kickoff protocol in `../Project FIles/developer-kickoff.md`).
+
+## Vercel staging
+
+1. Create a GitHub repository and push this `app` directory (or the whole workspace with **Root Directory** set to `app` in Vercel).
+2. Import the repo in Vercel; set **Environment Variables** to match `.env.example` (production + preview).
+3. Deploy preview on every PR; promote `main` to production when ready.
+
+## CI
+
+GitHub Actions workflow lives in [.github/workflows/ci.yml](.github/workflows/ci.yml). It runs **lint**, **typecheck**, and **build** on pushes and PRs to `main` and `staging`. The build step uses placeholder env values when repository **Secrets** are unset so CI stays green; add real `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `DATABASE_URL` secrets if you want CI to compile with production-like keys.
