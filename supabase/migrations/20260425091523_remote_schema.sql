@@ -1,0 +1,1 @@
+-- Placeholder migration kept for `supabase_migrations` history alignment. Schema baseline follows in later migrations.

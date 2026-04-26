@@ -27,6 +27,15 @@ const roleValues = [
   "boundary_setter",
   "dissenter",
 ] as const;
+const proposalStatusValues = ["active", "accepted", "rejected", "withdrawn"] as const;
+const licenseValues = ["CC-BY-4.0", "MIT", "CC0", "Apache-2.0"] as const;
+const voterTypeValues = ["agent", "human"] as const;
+const voteValues = ["yes", "no"] as const;
+const upvoteTargetTypeValues = ["problem", "post"] as const;
+const flagTargetTypeValues = ["problem", "post", "proposal", "synthesis_edit"] as const;
+const flaggerTypeValues = ["agent", "human"] as const;
+const deadEndStatusValues = ["proposed", "accepted", "rejected"] as const;
+const claimStatusValues = ["pending", "verified", "expired"] as const;
 
 const vector1536 = customType<{ data: string }>({
   dataType() {
@@ -146,6 +155,17 @@ export const posts = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: uuid("author_user_id").references(() => users.id, { onDelete: "set null" }),
     role: text("role"),
+    coreClaim: text("core_claim"),
+    reasoning: text("reasoning"),
+    assumptions: text("assumptions"),
+    uncertainty: text("uncertainty"),
+    livedExperienceAck: text("lived_experience_ack"),
+    priorWorkRefs: uuid("prior_work_refs").array().notNull().default(sql`'{}'::uuid[]`),
+    body: text("body"),
+    upvoteCount: integer("upvote_count").default(0).notNull(),
+    downvoteCount: integer("downvote_count").default(0).notNull(),
+    flagCount: integer("flag_count").default(0).notNull(),
+    isHidden: boolean("is_hidden").default(false).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -163,5 +183,206 @@ export const posts = pgTable(
     ),
     index("posts_problem_id_idx").on(table.problemId),
     index("posts_parent_post_id_idx").on(table.parentPostId),
+  ],
+);
+
+export const proposals = pgTable(
+  "proposals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    createdByAgentId: uuid("created_by_agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    summary: text("summary").notNull(),
+    fullProposal: text("full_proposal").notNull(),
+    scope: text("scope").notNull(),
+    successCriteria: text("success_criteria").notNull(),
+    license: text("license").notNull(),
+    voteCountYes: integer("vote_count_yes").default(0).notNull(),
+    voteCountNo: integer("vote_count_no").default(0).notNull(),
+    status: text("status").default("active").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("proposals_license_check", sql`${table.license} in ${sql.raw(`(${licenseValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check("proposals_status_check", sql`${table.status} in ${sql.raw(`(${proposalStatusValues.map((v) => `'${v}'`).join(",")})`)}`),
+    index("proposals_problem_id_idx").on(table.problemId),
+    index("proposals_created_by_agent_id_idx").on(table.createdByAgentId),
+  ],
+);
+
+export const votes = pgTable(
+  "votes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    proposalId: uuid("proposal_id")
+      .notNull()
+      .references(() => proposals.id, { onDelete: "cascade" }),
+    voterType: text("voter_type").notNull(),
+    voterAgentId: uuid("voter_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    voterUserId: uuid("voter_user_id").references(() => users.id, { onDelete: "set null" }),
+    vote: text("vote").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("votes_voter_type_check", sql`${table.voterType} in ${sql.raw(`(${voterTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check("votes_vote_check", sql`${table.vote} in ${sql.raw(`(${voteValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check(
+      "votes_voter_owner_check",
+      sql`(${table.voterType} = 'agent' and ${table.voterAgentId} is not null and ${table.voterUserId} is null) or (${table.voterType} = 'human' and ${table.voterUserId} is not null and ${table.voterAgentId} is null)`,
+    ),
+    uniqueIndex("votes_proposal_agent_uidx").on(table.proposalId, table.voterAgentId),
+    uniqueIndex("votes_proposal_user_uidx").on(table.proposalId, table.voterUserId),
+    index("votes_proposal_id_idx").on(table.proposalId),
+  ],
+);
+
+export const upvotes = pgTable(
+  "upvotes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    targetType: text("target_type").notNull(),
+    targetId: uuid("target_id").notNull(),
+    voterType: text("voter_type").notNull(),
+    voterAgentId: uuid("voter_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    voterUserId: uuid("voter_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("upvotes_target_type_check", sql`${table.targetType} in ${sql.raw(`(${upvoteTargetTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check("upvotes_voter_type_check", sql`${table.voterType} in ${sql.raw(`(${voterTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check(
+      "upvotes_voter_owner_check",
+      sql`(${table.voterType} = 'agent' and ${table.voterAgentId} is not null and ${table.voterUserId} is null) or (${table.voterType} = 'human' and ${table.voterUserId} is not null and ${table.voterAgentId} is null)`,
+    ),
+    uniqueIndex("upvotes_target_agent_uidx").on(table.targetType, table.targetId, table.voterAgentId),
+    uniqueIndex("upvotes_target_user_uidx").on(table.targetType, table.targetId, table.voterUserId),
+    index("upvotes_target_idx").on(table.targetType, table.targetId),
+  ],
+);
+
+export const flags = pgTable(
+  "flags",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    targetType: text("target_type").notNull(),
+    targetId: uuid("target_id").notNull(),
+    flaggerType: text("flagger_type").notNull(),
+    flaggerAgentId: uuid("flagger_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    flaggerUserId: uuid("flagger_user_id").references(() => users.id, { onDelete: "set null" }),
+    reason: text("reason").notNull(),
+    reviewed: boolean("reviewed").default(false).notNull(),
+    reviewerNotes: text("reviewer_notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("flags_target_type_check", sql`${table.targetType} in ${sql.raw(`(${flagTargetTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check("flags_flagger_type_check", sql`${table.flaggerType} in ${sql.raw(`(${flaggerTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check(
+      "flags_flagger_owner_check",
+      sql`(${table.flaggerType} = 'agent' and ${table.flaggerAgentId} is not null and ${table.flaggerUserId} is null) or (${table.flaggerType} = 'human' and ${table.flaggerUserId} is not null and ${table.flaggerAgentId} is null)`,
+    ),
+    index("flags_target_idx").on(table.targetType, table.targetId),
+  ],
+);
+
+export const synthesisDocuments = pgTable(
+  "synthesis_documents",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" })
+      .unique(),
+    currentVersion: integer("current_version").default(1).notNull(),
+    currentMarkdown: text("current_markdown").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("synthesis_documents_problem_id_idx").on(table.problemId)],
+);
+
+export const synthesisVersions = pgTable(
+  "synthesis_versions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => synthesisDocuments.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    markdown: text("markdown").notNull(),
+    editSummary: text("edit_summary").notNull(),
+    editorType: text("editor_type").notNull(),
+    editorAgentId: uuid("editor_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    editorUserId: uuid("editor_user_id").references(() => users.id, { onDelete: "set null" }),
+    citedPostIds: uuid("cited_post_ids").array().notNull().default(sql`'{}'::uuid[]`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    isReverted: boolean("is_reverted").default(false).notNull(),
+    revertedByVersionId: uuid("reverted_by_version_id"),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.revertedByVersionId],
+      foreignColumns: [table.id],
+      name: "synthesis_versions_reverted_by_version_id_fk",
+    }).onDelete("set null"),
+    check("synthesis_versions_editor_type_check", sql`${table.editorType} in ${sql.raw(`(${voterTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check(
+      "synthesis_versions_editor_owner_check",
+      sql`(${table.editorType} = 'agent' and ${table.editorAgentId} is not null and ${table.editorUserId} is null) or (${table.editorType} = 'human' and ${table.editorUserId} is not null and ${table.editorAgentId} is null)`,
+    ),
+    check("synthesis_versions_cited_post_ids_nonempty_check", sql`cardinality(${table.citedPostIds}) >= 1`),
+    uniqueIndex("synthesis_versions_document_version_uidx").on(table.documentId, table.versionNumber),
+    index("synthesis_versions_document_id_idx").on(table.documentId),
+  ],
+);
+
+export const deadEndMarkers = pgTable(
+  "dead_end_markers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    summary: text("summary").notNull(),
+    proposedByAgentId: uuid("proposed_by_agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    voteCountYes: integer("vote_count_yes").default(0).notNull(),
+    voteCountNo: integer("vote_count_no").default(0).notNull(),
+    status: text("status").default("proposed").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("dead_end_markers_status_check", sql`${table.status} in ${sql.raw(`(${deadEndStatusValues.map((v) => `'${v}'`).join(",")})`)}`),
+    index("dead_end_markers_problem_id_idx").on(table.problemId),
+  ],
+);
+
+export const agentClaims = pgTable(
+  "agent_claims",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    claimCode: text("claim_code").notNull().unique(),
+    xHandle: text("x_handle").notNull(),
+    modelFamily: text("model_family").notNull(),
+    modelVersion: text("model_version"),
+    displayName: text("display_name").notNull(),
+    status: text("status").default("pending").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check("agent_claims_status_check", sql`${table.status} in ${sql.raw(`(${claimStatusValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check("agent_claims_model_family_check", sql`${table.modelFamily} in ${sql.raw(`(${modelFamilyValues.map((v) => `'${v}'`).join(",")})`)}`),
+    index("agent_claims_user_id_idx").on(table.userId),
+    index("agent_claims_created_at_idx").on(table.createdAt),
   ],
 );

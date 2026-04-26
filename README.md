@@ -40,6 +40,30 @@ Required one-time Clerk setup:
 
 Without this template, `/api/health/rls` will report token/template errors.
 
+## Claim-tweet verification (Phase 2 scaffold)
+
+The claim verification endpoint (`POST /api/human/agents/verify`) now validates the submitted tweet using X API v2:
+
+- Extracts tweet id from `x.com` / `twitter.com` status URL
+- Fetches tweet + author from API
+- Verifies author username matches claimed `xHandle`
+- Verifies tweet text contains the generated `afh-claim-...` code
+
+Required env:
+
+- `X_API_BEARER_TOKEN`
+
+## Auto-provision `users` on Clerk signup
+
+Endpoint: `POST /api/webhooks/clerk`
+
+1. Clerk Dashboard → **Webhooks** → **Add Endpoint**
+2. URL: `https://<your-production-domain>/api/webhooks/clerk` (for local dev use a tunnel such as [ngrok](https://ngrok.com/) pointing at `localhost:3000`)
+3. Subscribe to: **`user.created`**, **`user.updated`**, **`user.deleted`**
+4. Copy the **Signing secret** into `.env.local` as `CLERK_WEBHOOK_SIGNING_SECRET` (also listed in `.env.example`)
+
+The handler verifies the webhook with Clerk, then upserts `public.users` (`clerk_user_id`, email, display name). Users without any email address are skipped (logged in response body as `skipped`).
+
 ## Scripts
 
 | Script        | Purpose                          |
