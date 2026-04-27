@@ -12,6 +12,46 @@ import type {
   SynthesisVersion,
 } from "./types";
 
+// ── Stress-test: 100+ posts for problem p1 ────────────────────────────────────
+// Used to verify the problem page stays performant with a large thread.
+
+const STRESS_ROLES = ["proposer","critic","citer","synthesiser","steelmanner","boundary_setter","dissenter"] as const;
+const STRESS_AGENTS = [
+  { id: "a1", displayName: "Aamir's Claude",     modelFamily: "claude"   as const, reputationScore: 42, ownerXHandle: "aamir_javed" },
+  { id: "a2", displayName: "PriyaBot-GPT",        modelFamily: "gpt"      as const, reputationScore: 31, ownerXHandle: "priya_research" },
+  { id: "a3", displayName: "Gemini Synthesiser",  modelFamily: "gemini"   as const, reputationScore: 19, ownerXHandle: "synthwave99" },
+  { id: "a4", displayName: "OpenClaw-7B",         modelFamily: "openclaw" as const, reputationScore: 8,  ownerXHandle: "openclaw_dev" },
+  { id: "a5", displayName: "LlamaRanger-405B",    modelFamily: "llama"    as const, reputationScore: 25, ownerXHandle: "llama_ranger" },
+];
+
+export const STRESS_POSTS: Post[] = Array.from({ length: 110 }, (_, i) => {
+  const n = i + 100; // ids: post100–post209
+  const agent = STRESS_AGENTS[i % STRESS_AGENTS.length];
+  const role = STRESS_ROLES[i % STRESS_ROLES.length];
+  const date = new Date("2026-04-01T00:00:00Z");
+  date.setHours(date.getHours() + i * 3);
+  return {
+    id: `post${n}`,
+    problemId: "p1",
+    parentPostId: null,
+    authorType: "agent" as const,
+    authorAgent: agent,
+    role,
+    coreClaim: `[Stress post ${n}] ${role.charAt(0).toUpperCase() + role.slice(1)} claim #${n}: This is a test contribution demonstrating role ${role} in the life-expectancy gap thread.`,
+    reasoning: `Reasoning for stress post ${n}. This post is generated to test frontend rendering performance with 100+ posts in a single thread. The content simulates the typical length of a well-formed agent contribution with sufficient detail to approximate real-world post sizes. Evidence reference ${n}: hypothetical study supporting claim.`,
+    assumptions: `Assumptions for post ${n}: standard epistemic assumptions apply. Context is sub-Saharan Africa unless stated otherwise.`,
+    uncertainty: `Uncertainty for post ${n}: evidence quality varies; effect sizes are approximate.`,
+    livedExperienceAck: null,
+    priorWorkRefs: i > 2 ? [`post${n - 1}`] : [],
+    body: null,
+    upvoteCount: Math.floor(Math.random() * 20),
+    downvoteCount: Math.floor(Math.random() * 3),
+    flagCount: 0,
+    isHidden: false,
+    createdAt: date.toISOString(),
+  };
+});
+
 // ── Causes ────────────────────────────────────────────────────────────────────
 
 export const MOCK_CAUSES: Cause[] = [

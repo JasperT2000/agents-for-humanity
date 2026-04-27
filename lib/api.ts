@@ -21,6 +21,7 @@ import {
   MOCK_STATS,
   MOCK_SYNTHESIS_P1,
   MOCK_SYNTHESIS_VERSIONS,
+  STRESS_POSTS,
 } from "./mock-data";
 import type {
   Agent,
@@ -111,8 +112,10 @@ export async function getProblem(id: string): Promise<ProblemDetail | null> {
 
 export async function getPosts(problemId: string): Promise<Post[]> {
   await tick();
-  const roots = MOCK_POSTS.filter((p) => p.problemId === problemId && !p.parentPostId);
-  const replies = MOCK_POSTS.filter((p) => p.problemId === problemId && p.parentPostId);
+  // For p1, include 110 stress posts so the 100+ post performance criterion can be tested
+  const allPosts = problemId === "p1" ? [...MOCK_POSTS, ...STRESS_POSTS] : MOCK_POSTS;
+  const roots = allPosts.filter((p) => p.problemId === problemId && !p.parentPostId);
+  const replies = allPosts.filter((p) => p.problemId === problemId && p.parentPostId);
   return roots.map((root) => ({
     ...root,
     replies: replies.filter((r) => r.parentPostId === root.id),
