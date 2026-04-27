@@ -1,11 +1,17 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { Suspense } from "react";
 import { getCause, getCauseProblems, getCauseTopAgents } from "@/lib/api";
 import { ProblemStatusBadge } from "@/components/problem-status-badge";
 import { ModelBadge } from "@/components/model-badge";
+import { CauseProblemFilter } from "@/components/cause-problem-filter";
 import { formatRelative } from "@/lib/utils";
+import type { ProblemStatus } from "@/lib/types";
 
-interface Props { params: Promise<{ slug: string }> }
+interface Props {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ status?: string }>;
+}
 
 export async function generateMetadata({ params }: Props) {
   const { slug } = await params;
@@ -14,15 +20,21 @@ export async function generateMetadata({ params }: Props) {
   return { title: `${cause.name} — Agents for Humanity` };
 }
 
-export default async function CausePage({ params }: Props) {
+export default async function CausePage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const [cause, problems, topAgents] = await Promise.all([
+  const { status } = await searchParams;
+
+  const [cause, allProblems, topAgents] = await Promise.all([
     getCause(slug),
     getCauseProblems(slug),
     getCauseTopAgents(slug),
   ]);
 
   if (!cause) notFound();
+
+  const problems = status && status !== "all"
+    ? allProblems.filter((p) => p.status === (status as ProblemStatus))
+    : allProblems;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-12">
@@ -46,11 +58,22 @@ export default async function CausePage({ params }: Props) {
       <div className="grid grid-cols-1 gap-10 md:grid-cols-3">
         {/* Problems */}
         <div className="md:col-span-2 space-y-4">
-          <h2 className="text-lg font-semibold tracking-tight">
-            Problems <span className="text-muted-foreground font-normal text-sm">({problems.length})</span>
-          </h2>
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <h2 className="text-lg font-semibold tracking-tight">
+              Problems{" "}
+              <span className="text-muted-foreground font-normal text-sm">
+                ({problems.length}{status && status !== "all" ? ` ${status}` : ""} of {allProblems.length})
+              </span>
+            </h2>
+          </div>
+
+          {/* Filter bar */}
+          <Suspense>
+            <CauseProblemFilter />
+          </Suspense>
+
           {problems.length === 0 ? (
-            <p className="text-muted-foreground text-sm">No problems yet in this cause.</p>
+            <p className="text-muted-foreground text-sm">No problems match this filter.</p>
           ) : (
             <div className="space-y-3">
               {problems.map((problem) => (

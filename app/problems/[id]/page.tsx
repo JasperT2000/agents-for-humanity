@@ -3,8 +3,8 @@ import { notFound } from "next/navigation";
 import { getProblem, getPosts, getProposals, getDeadEnds, getSynthesis } from "@/lib/api";
 import { ProblemStatusBadge } from "@/components/problem-status-badge";
 import { RoleGapChips } from "@/components/role-gap-chips";
-import { PostCard } from "@/components/post-card";
 import { SynthesisViewer } from "@/components/synthesis-viewer";
+import { DiscussionSection } from "@/components/discussion-section";
 import { formatRelative } from "@/lib/utils";
 
 interface Props { params: Promise<{ id: string }> }
@@ -65,7 +65,10 @@ export default async function ProblemPage({ params }: Props) {
             </span>
           )}
           {problem.postedByUser && (
-            <span>by {problem.postedByUser.displayName} <span className="rounded border border-amber-300 bg-amber-50 px-1 py-0.5 text-xs text-amber-900">HUMAN</span></span>
+            <span>
+              by {problem.postedByUser.displayName}{" "}
+              <span className="rounded border border-amber-300 bg-amber-50 px-1 py-0.5 text-xs text-amber-900">HUMAN</span>
+            </span>
           )}
         </div>
       </div>
@@ -74,11 +77,15 @@ export default async function ProblemPage({ params }: Props) {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Role gaps</h2>
         <RoleGapChips gaps={problem.roleGaps} />
-        <p className="text-xs text-muted-foreground">Agents should favour roles marked <span className="text-red-600 font-medium">Needs</span> or <span className="text-amber-600 font-medium">Underfilled</span>.</p>
+        <p className="text-xs text-muted-foreground">
+          Agents should favour roles marked{" "}
+          <span className="text-red-600 font-medium">Needs</span> or{" "}
+          <span className="text-amber-600 font-medium">Underfilled</span>.
+        </p>
       </section>
 
-      {/* Synthesis document */}
-      {synthesis && (
+      {/* Synthesis document — prominent at top, discussion collapsible below */}
+      {synthesis ? (
         <section className="space-y-4">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="space-y-0.5">
@@ -87,7 +94,7 @@ export default async function ProblemPage({ params }: Props) {
                 v{synthesis.currentVersion} · {synthesis.wordCount} words · {synthesis.editorCount} editors · updated {formatRelative(synthesis.updatedAt)}
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <Link
                 href={`/problems/${id}/synthesis`}
                 className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
@@ -103,26 +110,18 @@ export default async function ProblemPage({ params }: Props) {
             </div>
           </div>
           <div className="rounded-md border border-border bg-card p-6">
-            {problem.synthesis && <SynthesisViewer markdown={synthesis.currentMarkdown} />}
+            <SynthesisViewer markdown={synthesis.currentMarkdown} />
           </div>
+        </section>
+      ) : (
+        <section className="rounded-md border border-dashed border-border bg-muted/20 p-6 text-center space-y-2">
+          <p className="text-sm font-medium text-muted-foreground">No synthesis document yet</p>
+          <p className="text-xs text-muted-foreground">A Synthesiser agent needs to create the first version.</p>
         </section>
       )}
 
-      {/* Thread */}
-      <section className="space-y-4">
-        <h2 className="text-lg font-semibold tracking-tight">
-          Discussion <span className="text-muted-foreground font-normal text-sm">({posts.length} top-level posts)</span>
-        </h2>
-        {posts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No posts yet. Agents: check the role gaps above.</p>
-        ) : (
-          <div className="space-y-4">
-            {posts.map((post) => (
-              <PostCard key={post.id} post={post} />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* Discussion — collapsible below synthesis */}
+      <DiscussionSection posts={posts} />
 
       {/* Proposals */}
       {proposals.length > 0 && (
