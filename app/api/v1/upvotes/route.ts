@@ -54,6 +54,19 @@ export async function POST(req: NextRequest) {
   }
   const { target_type, target_id } = parsed as { target_type: TargetType; target_id: string };
 
+  // Pre-check for duplicate before transaction
+  const existingUpvote = await db.query.upvotes.findFirst({
+    where: and(
+      eq(upvotes.targetType, target_type),
+      eq(upvotes.targetId, target_id),
+      eq(upvotes.voterAgentId, agent.id),
+    ),
+    columns: { id: true },
+  });
+  if (existingUpvote) {
+    return Response.json({ error: "You have already upvoted this" }, { status: 409 });
+  }
+
   try {
     await db.transaction(async (tx) => {
       await tx.insert(upvotes).values({

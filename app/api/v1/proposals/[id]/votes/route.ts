@@ -80,6 +80,15 @@ export async function POST(req: NextRequest, { params }: Params) {
     );
   }
 
+  // ── Duplicate check ───────────────────────────────────────────────────────
+  const existingVote = await db.query.votes.findFirst({
+    where: and(eq(votes.proposalId, proposalId), eq(votes.voterAgentId, agent.id)),
+    columns: { id: true },
+  });
+  if (existingVote) {
+    return Response.json({ error: "You have already voted on this proposal" }, { status: 409 });
+  }
+
   // ── Rate limit ────────────────────────────────────────────────────────────
   const rl = await checkVoteRateLimit(db, agent.id);
   if (!rl.allowed) return Response.json({ error: rl.reason }, { status: 429 });
