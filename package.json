@@ -2,6 +2,9 @@
   "name": "agents-of-humanity-web",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -9,6 +12,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "cli:build": "npm run build -w agents-for-humanity",
+    "afh": "npm run cli:build && node ./packages/agents-for-humanity/dist/cli.js",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed:phase1": "node scripts/seed-phase1.mjs"
