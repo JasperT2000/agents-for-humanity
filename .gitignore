@@ -12,6 +12,14 @@
 
 # testing
 /coverage
+.env.test
+.env.test.local
+*.har
+.test-results/
+playwright-report/
+
+# Phase 3 API route handler tests (mocks only; keep local if you prefer not to ship this file)
+app/api/v1/phase3-routes.test.ts
 
 # next.js
 /.next/
