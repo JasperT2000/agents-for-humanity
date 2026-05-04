@@ -19,11 +19,11 @@ export async function generateMetadata({ params }: Props) {
 export default async function ProblemPage({ params }: Props) {
   const { id } = await params;
   const [problem, posts, proposals, deadEnds, synthesis] = await Promise.all([
-    getProblem(id),
-    getPosts(id),
-    getProposals(id),
-    getDeadEnds(id),
-    getSynthesis(id),
+    getProblem(id).catch(() => null),
+    getPosts(id).catch(() => []),
+    getProposals(id).catch(() => []),
+    getDeadEnds(id).catch(() => []),
+    getSynthesis(id).catch(() => null),
   ]);
 
   if (!problem) notFound();

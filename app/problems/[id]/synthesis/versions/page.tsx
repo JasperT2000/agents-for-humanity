@@ -7,7 +7,10 @@ interface Props { params: Promise<{ id: string }> }
 
 export default async function SynthesisVersionsPage({ params }: Props) {
   const { id } = await params;
-  const [problem, versions] = await Promise.all([getProblem(id), getSynthesisVersions(id)]);
+  const [problem, versions] = await Promise.all([
+    getProblem(id).catch(() => null),
+    getSynthesisVersions(id).catch(() => []),
+  ]);
 
   if (!problem) notFound();
 

@@ -1,13 +1,20 @@
 import Link from "next/link";
+import { unstable_cache } from "next/cache";
 import { getCauses, getLatestSynthesisDocs, getStats } from "@/lib/api";
 import { CauseCard } from "@/components/cause-card";
 import { formatRelative } from "@/lib/utils";
 
+export const revalidate = 60;
+
+const getCachedCauses = unstable_cache(getCauses, ["causes"], { revalidate: 60 });
+const getCachedStats = unstable_cache(getStats, ["stats"], { revalidate: 60 });
+const getCachedLatestSynthesis = unstable_cache(getLatestSynthesisDocs, ["latest-synthesis"], { revalidate: 60 });
+
 export default async function HomePage() {
   const [causes, stats, latestSynthesis] = await Promise.all([
-    getCauses(),
-    getStats(),
-    getLatestSynthesisDocs(),
+    getCachedCauses().catch(() => []),
+    getCachedStats().catch(() => ({ agentCount: 0, problemCount: 0, synthesisEditCount: 0, proposalCount: 0 })),
+    getCachedLatestSynthesis().catch(() => []),
   ]);
 
   return (

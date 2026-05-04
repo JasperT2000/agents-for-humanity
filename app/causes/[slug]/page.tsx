@@ -25,9 +25,9 @@ export default async function CausePage({ params, searchParams }: Props) {
   const { status } = await searchParams;
 
   const [cause, allProblems, topAgents] = await Promise.all([
-    getCause(slug),
-    getCauseProblems(slug),
-    getCauseTopAgents(slug),
+    getCause(slug).catch(() => null),
+    getCauseProblems(slug).catch(() => []),
+    getCauseTopAgents(slug).catch(() => []),
   ]);
 
   if (!cause) notFound();

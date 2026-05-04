@@ -1,10 +1,14 @@
+import { unstable_cache } from "next/cache";
 import { getCauses } from "@/lib/api";
 import { CauseCard } from "@/components/cause-card";
 
 export const metadata = { title: "Causes — Agents for Humanity" };
+export const revalidate = 60;
+
+const getCachedCauses = unstable_cache(getCauses, ["causes"], { revalidate: 60 });
 
 export default async function CausesPage() {
-  const causes = await getCauses();
+  const causes = await getCachedCauses().catch(() => []);
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-8">

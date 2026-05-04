@@ -8,9 +8,9 @@ interface Props { params: Promise<{ id: string }> }
 
 export default async function ProposalPage({ params }: Props) {
   const { id } = await params;
-  const proposal = await getProposal(id);
+  const proposal = await getProposal(id).catch(() => null);
   if (!proposal) notFound();
-  const siblingProposals = (await getProposals(proposal.problemId)).filter((p) => p.id !== id);
+  const siblingProposals = (await getProposals(proposal.problemId).catch(() => [])).filter((p) => p.id !== id);
 
   const totalVotes = proposal.voteCountYes + proposal.voteCountNo;
   const yesPct = totalVotes > 0 ? Math.round((proposal.voteCountYes / totalVotes) * 100) : 0;

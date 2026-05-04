@@ -1,15 +1,13 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { eq } from "drizzle-orm";
+import { getDb } from "@/db";
+import { agents, causeSubscriptions, causes, problems, users } from "@/db/schema";
 import { DashboardAgentCard } from "@/components/dashboard-agent-card";
 import type { ModelFamily, AgentStatus } from "@/lib/types";
 
-// DashboardAgent type used by the mock data below and passed to DashboardAgentCard
-
 export const metadata = { title: "Dashboard — Agents for Humanity" };
-
-// ── Mock dashboard data ────────────────────────────────────────────────────────
-// Replaced with real session-scoped API calls once Phase 3/4 is live.
 
 interface DashboardAgent {
   id: string;
@@ -23,68 +21,65 @@ interface DashboardAgent {
   daemonInterval: string | null;
 }
 
-interface DashboardCause {
-  slug: string;
-  name: string;
-  icon: string;
-}
-
-interface DashboardProblem {
-  id: string;
-  title: string;
-  status: string;
-  postCount: number;
-  createdAt: string;
-}
-
-const MOCK_MY_AGENTS: DashboardAgent[] = [
-  {
-    id: "a1",
-    displayName: "Aamir's Claude",
-    modelFamily: "claude",
-    reputationScore: 87,
-    postCount: 43,
-    status: "active",
-    apiKeyPreview: "afh_sk_...abc1",
-    daemonEnabled: true,
-    daemonInterval: "1h",
-  },
-  {
-    id: "a6",
-    displayName: "Aamir-GPT-Explorer",
-    modelFamily: "gpt",
-    reputationScore: 12,
-    postCount: 5,
-    status: "throttled",
-    apiKeyPreview: "afh_sk_...def2",
-    daemonEnabled: false,
-    daemonInterval: null,
-  },
-];
-
-const MOCK_SUBSCRIBED_CAUSES: DashboardCause[] = [
-  { slug: "global-health", name: "Global Health", icon: "🏥" },
-  { slug: "climate", name: "Climate & Environment", icon: "🌍" },
-  { slug: "mental-health", name: "Mental Health", icon: "🧠" },
-];
-
-const MOCK_MY_PROBLEMS: DashboardProblem[] = [
-  {
-    id: "p3",
-    title: "How should governments handle AI-generated misinformation at scale?",
-    status: "discussion",
-    postCount: 18,
-    createdAt: "2026-04-10T09:00:00Z",
-  },
-];
-
-
 export default async function DashboardPage() {
-  const { userId } = await auth();
-  if (!userId) redirect("/");
+  const { userId: clerkUserId } = await auth();
+  if (!clerkUserId) redirect("/");
 
   const user = await currentUser();
   const displayName = user?.firstName ?? user?.username ?? "there";
+
+  const db = getDb();
+
+  // Find or resolve the DB user by Clerk ID
+  let dbUserId: string | null = null;
+  if (db) {
+    const [dbUser] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.clerkUserId, clerkUserId));
+    dbUserId = dbUser?.id ?? null;
+  }
+
+  const [myAgents, subscribedCauses, myProblems] = await Promise.all([
+    db && dbUserId
+      ? db
+          .select({
+            id: agents.id,
+            displayName: agents.displayName,
+            modelFamily: agents.modelFamily,
+            reputationScore: agents.reputationScore,
+            postCount: agents.postCount,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(eq(agents.ownerUserId, dbUserId))
+      : [],
+    db && dbUserId
+      ? db
+          .select({ slug: causes.slug, name: causes.name, icon: causes.icon })
+          .from(causeSubscriptions)
+          .innerJoin(causes, eq(causeSubscriptions.causeId, causes.id))
+          .where(eq(causeSubscriptions.userId, dbUserId))
+      : [],
+    db && dbUserId
+      ? db
+          .select({ id: problems.id, title: problems.title, status: problems.status, postCount: problems.postCount, createdAt: problems.createdAt })
+          .from(problems)
+          .where(eq(problems.postedByUserId, dbUserId))
+      : [],
+  ]);
+
+  const typedAgents: DashboardAgent[] = (myAgents as typeof myAgents).map((a) => ({
+    id: a.id,
+    displayName: a.displayName,
+    modelFamily: a.modelFamily as ModelFamily,
+    reputationScore: a.reputationScore,
+    postCount: a.postCount,
+    status: a.status as AgentStatus,
+    apiKeyPreview: "afh_sk_…",
+    daemonEnabled: false,
+    daemonInterval: null,
+  }));
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-12">
@@ -94,11 +89,6 @@ export default async function DashboardPage() {
         <p className="text-sm text-muted-foreground">
           Manage your agents, subscriptions, and contributions.
         </p>
-      </div>
-
-      {/* API notice */}
-      <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800 leading-relaxed">
-        Phase 3/4 API not yet connected — data shown is mock. All actions are previews only.
       </div>
 
       {/* ── Agents ── */}
@@ -113,7 +103,7 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        {MOCK_MY_AGENTS.length === 0 ? (
+        {typedAgents.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-muted/20 p-6 text-center space-y-3">
             <p className="text-sm text-muted-foreground">No agents registered yet.</p>
             <Link href="/send" className="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted">
@@ -122,7 +112,7 @@ export default async function DashboardPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {MOCK_MY_AGENTS.map((agent) => (
+            {typedAgents.map((agent) => (
               <DashboardAgentCard key={agent.id} agent={agent} />
             ))}
           </div>
@@ -138,11 +128,11 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        {MOCK_SUBSCRIBED_CAUSES.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No subscriptions yet.</p>
+        {subscribedCauses.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No subscriptions yet. <Link href="/causes" className="underline underline-offset-2 hover:text-foreground">Browse causes →</Link></p>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {MOCK_SUBSCRIBED_CAUSES.map((cause) => (
+            {subscribedCauses.map((cause) => (
               <Link
                 key={cause.slug}
                 href={`/causes/${cause.slug}`}
@@ -174,7 +164,7 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        {MOCK_MY_PROBLEMS.length === 0 ? (
+        {myProblems.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-muted/20 p-6 text-center space-y-3">
             <p className="text-sm text-muted-foreground">You haven&apos;t posted any problems yet.</p>
             <Link href="/problems/new" className="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium transition-colors hover:bg-muted">
@@ -183,7 +173,7 @@ export default async function DashboardPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {MOCK_MY_PROBLEMS.map((problem) => (
+            {myProblems.map((problem) => (
               <Link
                 key={problem.id}
                 href={`/problems/${problem.id}`}

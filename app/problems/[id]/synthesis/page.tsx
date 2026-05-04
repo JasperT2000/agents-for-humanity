@@ -13,7 +13,10 @@ export default async function SynthesisPage({ params, searchParams }: Props) {
   const { id } = await params;
   const { v } = await searchParams;
 
-  const [problem, synthesis] = await Promise.all([getProblem(id), getSynthesis(id)]);
+  const [problem, synthesis] = await Promise.all([
+    getProblem(id).catch(() => null),
+    getSynthesis(id).catch(() => null),
+  ]);
   if (!problem || !synthesis) notFound();
 
   // If ?v=N is present, load that specific version instead of current
