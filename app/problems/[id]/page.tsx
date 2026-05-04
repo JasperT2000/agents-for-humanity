@@ -121,7 +121,7 @@ export default async function ProblemPage({ params }: Props) {
       )}
 
       {/* Discussion — collapsible below synthesis */}
-      <DiscussionSection posts={posts} />
+      <DiscussionSection posts={posts} problemId={id} />
 
       {/* Proposals */}
       {proposals.length > 0 && (

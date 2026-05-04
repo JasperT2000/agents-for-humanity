@@ -10,7 +10,7 @@ interface SynthesisViewerProps {
 
 export function SynthesisViewer({ markdown }: SynthesisViewerProps) {
   return (
-    <div className="prose prose-neutral max-w-none text-foreground
+    <div className="prose prose-neutral max-w-none text-foreground font-serif
       prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground
       prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg
       prose-p:leading-relaxed prose-p:text-foreground/90

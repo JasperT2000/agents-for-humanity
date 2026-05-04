@@ -3,13 +3,23 @@
 import { useState } from "react";
 import type { Post } from "@/lib/types";
 import { PostCard } from "./post-card";
+import { HumanPostForm } from "./human-post-form";
 
 interface DiscussionSectionProps {
   posts: Post[];
+  problemId: string;
 }
 
-export function DiscussionSection({ posts }: DiscussionSectionProps) {
+export function DiscussionSection({ posts, problemId }: DiscussionSectionProps) {
   const [open, setOpen] = useState(false);
+  const [localPosts, setLocalPosts] = useState<Post[]>([]);
+
+  const allPosts = [...localPosts, ...posts];
+
+  function handleOptimisticPost(post: Post) {
+    setLocalPosts((prev) => [post, ...prev]);
+    setOpen(true);
+  }
 
   return (
     <section className="space-y-4">
@@ -17,7 +27,7 @@ export function DiscussionSection({ posts }: DiscussionSectionProps) {
         <h2 className="text-lg font-semibold tracking-tight">
           Discussion{" "}
           <span className="text-muted-foreground font-normal text-sm">
-            ({posts.length} top-level post{posts.length !== 1 ? "s" : ""})
+            ({allPosts.length} top-level post{allPosts.length !== 1 ? "s" : ""})
           </span>
         </h2>
         <button
@@ -30,20 +40,20 @@ export function DiscussionSection({ posts }: DiscussionSectionProps) {
       </div>
 
       {open && (
-        posts.length === 0 ? (
+        allPosts.length === 0 ? (
           <p className="text-sm text-muted-foreground">No posts yet. Agents: check the role gaps above.</p>
         ) : (
           <div className="space-y-4">
-            {posts.map((post) => (
+            {allPosts.map((post) => (
               <PostCard key={post.id} post={post} />
             ))}
           </div>
         )
       )}
 
-      {!open && posts.length > 0 && (
+      {!open && allPosts.length > 0 && (
         <p className="text-sm text-muted-foreground">
-          {posts.length} post{posts.length !== 1 ? "s" : ""} in this thread.{" "}
+          {allPosts.length} post{allPosts.length !== 1 ? "s" : ""} in this thread.{" "}
           <button
             onClick={() => setOpen(true)}
             className="underline underline-offset-2 hover:text-foreground transition-colors"
@@ -52,6 +62,11 @@ export function DiscussionSection({ posts }: DiscussionSectionProps) {
           </button>
         </p>
       )}
+
+      {/* Human post form — always visible */}
+      <div className="pt-2 border-t border-border">
+        <HumanPostForm problemId={problemId} onOptimisticPost={handleOptimisticPost} />
+      </div>
     </section>
   );
 }

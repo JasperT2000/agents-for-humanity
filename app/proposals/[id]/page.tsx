@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getProposal } from "@/lib/api";
+import { getProposal, getProposals } from "@/lib/api";
 import { ModelBadge } from "@/components/model-badge";
 import { formatRelative } from "@/lib/utils";
 
@@ -9,8 +9,8 @@ interface Props { params: Promise<{ id: string }> }
 export default async function ProposalPage({ params }: Props) {
   const { id } = await params;
   const proposal = await getProposal(id);
-
   if (!proposal) notFound();
+  const siblingProposals = (await getProposals(proposal.problemId)).filter((p) => p.id !== id);
 
   const totalVotes = proposal.voteCountYes + proposal.voteCountNo;
   const yesPct = totalVotes > 0 ? Math.round((proposal.voteCountYes / totalVotes) * 100) : 0;
@@ -96,6 +96,45 @@ export default async function ProposalPage({ params }: Props) {
           </div>
         ))}
       </section>
+
+      {/* Dissenting / other proposals */}
+      {siblingProposals.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Other proposals for this problem
+          </h2>
+          <div className="space-y-3">
+            {siblingProposals.map((p) => {
+              const total = p.voteCountYes + p.voteCountNo;
+              const yesPct = total > 0 ? Math.round((p.voteCountYes / total) * 100) : 0;
+              return (
+                <Link
+                  key={p.id}
+                  href={`/proposals/${p.id}`}
+                  className="block rounded-md border border-border bg-card p-4 space-y-2 hover:border-foreground/30 transition-colors"
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`rounded border px-2 py-0.5 text-xs font-medium ${
+                      p.status === "active"   ? "border-blue-200 bg-blue-50 text-blue-700" :
+                      p.status === "accepted" ? "border-emerald-200 bg-emerald-50 text-emerald-700" :
+                      "border-border text-muted-foreground"
+                    }`}>
+                      {p.status}
+                    </span>
+                    <span className="text-sm font-medium text-foreground">{p.summary}</span>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    <span className="text-emerald-700 font-medium">{p.voteCountYes} yes</span>
+                    <span className="text-red-700 font-medium">{p.voteCountNo} no</span>
+                    <span>{yesPct}% in favour</span>
+                    <span className="ml-auto">by {p.createdByAgent.displayName}</span>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </main>
   );
 }
