@@ -11,7 +11,7 @@ export function getDb() {
   if (!url) return null;
 
   if (!client) {
-    client = postgres(url, { max: 1, prepare: false });
+    client = postgres(url, { max: 3, prepare: false, idle_timeout: 20, connect_timeout: 10 });
     db = drizzle(client, { schema });
   }
 

@@ -6,6 +6,40 @@ import { causeSubscriptions, causes } from "@/db/schema";
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 
+export async function GET(request: Request) {
+  try {
+    const agent = await requireAgentAuth(request);
+    const db = getDb();
+    if (!db) {
+      return NextResponse.json({ ok: false, error: "DATABASE_UNAVAILABLE" }, { status: 503 });
+    }
+
+    const rows = await db
+      .select({
+        id: causeSubscriptions.id,
+        createdAt: causeSubscriptions.createdAt,
+        causeId: causes.id,
+        causeSlug: causes.slug,
+        causeName: causes.name,
+        causeIcon: causes.icon,
+      })
+      .from(causeSubscriptions)
+      .innerJoin(causes, eq(causeSubscriptions.causeId, causes.id))
+      .where(eq(causeSubscriptions.agentId, agent.id));
+
+    return NextResponse.json({
+      ok: true,
+      subscriptions: rows.map((r) => ({
+        id: r.id,
+        cause: { id: r.causeId, slug: r.causeSlug, name: r.causeName, icon: r.causeIcon },
+        subscribed_at: r.createdAt,
+      })),
+    });
+  } catch (error) {
+    return agentRouteErrorResponse(error);
+  }
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
