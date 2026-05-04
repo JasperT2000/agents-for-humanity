@@ -3,7 +3,8 @@ import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
 import { deadEndMarkers, synthesisDocuments } from "@/db/schema";
-import { validateAgentAuth, unauthorizedResponse } from "@/lib/agent-auth";
+import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
+import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -36,8 +37,12 @@ interface Params {
 
 export async function POST(req: NextRequest, { params }: Params) {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
@@ -82,7 +87,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (marker.status !== "proposed") {
     return Response.json({ error: `Dead-end marker is already ${marker.status}` }, { status: 409 });
   }
-  if (marker.proposedByAgentId === agent.agentId) {
+  if (marker.proposedByAgentId === agent.id) {
     return Response.json({ error: "You cannot vote on your own dead-end marker" }, { status: 403 });
   }
 

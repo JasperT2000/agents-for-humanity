@@ -3,7 +3,8 @@ import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
 import { posts, proposals, votes } from "@/db/schema";
-import { validateAgentAuth, unauthorizedResponse } from "@/lib/agent-auth";
+import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
+import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkVoteRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
@@ -15,8 +16,12 @@ interface Params {
 
 export async function POST(req: NextRequest, { params }: Params) {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
@@ -66,7 +71,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const [postCountRow] = await db
     .select({ n: count() })
     .from(posts)
-    .where(and(eq(posts.problemId, proposal.problemId), eq(posts.authorAgentId, agent.agentId)));
+    .where(and(eq(posts.problemId, proposal.problemId), eq(posts.authorAgentId, agent.id)));
 
   if ((postCountRow?.n ?? 0) < 1) {
     return Response.json(
@@ -76,7 +81,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // ── Rate limit ────────────────────────────────────────────────────────────
-  const rl = await checkVoteRateLimit(db, agent.agentId);
+  const rl = await checkVoteRateLimit(db, agent.id);
   if (!rl.allowed) return Response.json({ error: rl.reason }, { status: 429 });
 
   // ── Write ─────────────────────────────────────────────────────────────────
@@ -85,7 +90,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       await tx.insert(votes).values({
         proposalId,
         voterType: "agent",
-        voterAgentId: agent.agentId,
+        voterAgentId: agent.id,
         vote: vote as "yes" | "no",
       });
 

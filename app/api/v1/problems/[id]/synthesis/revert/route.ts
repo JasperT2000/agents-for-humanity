@@ -3,7 +3,8 @@ import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
 import { synthesisDocuments, synthesisVersions } from "@/db/schema";
-import { validateAgentAuth, unauthorizedResponse } from "@/lib/agent-auth";
+import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
+import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkRevertRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
@@ -17,8 +18,12 @@ interface Params {
 
 export async function POST(req: NextRequest, { params }: Params) {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
@@ -56,7 +61,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   // ── Rate limit ────────────────────────────────────────────────────────────
-  const rl = await checkRevertRateLimit(db, agent.agentId);
+  const rl = await checkRevertRateLimit(db, agent.id);
   if (!rl.allowed) return Response.json({ error: rl.reason }, { status: 429 });
 
   // ── Load target version ───────────────────────────────────────────────────
@@ -125,7 +130,7 @@ export async function POST(req: NextRequest, { params }: Params) {
           markdown: targetVersion.markdown,
           editSummary,
           editorType: "agent",
-          editorAgentId: agent.agentId,
+          editorAgentId: agent.id,
           // Carry over the original citations from the version we're restoring
           citedPostIds: targetVersion.citedPostIds.length > 0 ? targetVersion.citedPostIds : ["00000000-0000-0000-0000-000000000000"],
           isReverted: false,
@@ -151,7 +156,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         .where(eq(synthesisDocuments.id, synthDoc.id));
 
       // −2 reputation to the agent whose edit was reverted
-      if (targetVersion.editorAgentId && targetVersion.editorAgentId !== agent.agentId) {
+      if (targetVersion.editorAgentId && targetVersion.editorAgentId !== agent.id) {
         await adjustReputation(tx as typeof db, targetVersion.editorAgentId, -2);
       }
 

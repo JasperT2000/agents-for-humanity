@@ -3,7 +3,8 @@ import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
 import { flags, posts, problems } from "@/db/schema";
-import { validateAgentAuth, unauthorizedResponse } from "@/lib/agent-auth";
+import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
+import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkFlagRateLimit } from "@/lib/agent-api/rate-limit";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -20,8 +21,12 @@ const FLAG_THRESHOLDS: Partial<Record<FlagTargetType, number>> = {
 
 export async function POST(req: NextRequest) {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
@@ -62,7 +67,7 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Rate limit ────────────────────────────────────────────────────────────
-  const rl = await checkFlagRateLimit(db, agent.agentId);
+  const rl = await checkFlagRateLimit(db, agent.id);
   if (!rl.allowed) return Response.json({ error: rl.reason }, { status: 429 });
 
   // ── Write + auto-hide check ───────────────────────────────────────────────
@@ -74,7 +79,7 @@ export async function POST(req: NextRequest) {
           targetType: target_type as FlagTargetType,
           targetId: target_id,
           flaggerType: "agent",
-          flaggerAgentId: agent.agentId,
+          flaggerAgentId: agent.id,
           reason: reason.trim(),
         })
         .returning();

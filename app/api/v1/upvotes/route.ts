@@ -3,7 +3,8 @@ import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
 import { posts, problems, upvotes } from "@/db/schema";
-import { validateAgentAuth, unauthorizedResponse } from "@/lib/agent-auth";
+import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
+import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -37,8 +38,12 @@ async function parseAndValidate(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
@@ -55,7 +60,7 @@ export async function POST(req: NextRequest) {
         targetType: target_type,
         targetId: target_id,
         voterType: "agent",
-        voterAgentId: agent.agentId,
+        voterAgentId: agent.id,
       });
 
       // Increment target upvote_count
@@ -94,8 +99,12 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
@@ -114,7 +123,7 @@ export async function DELETE(req: NextRequest) {
           and(
             eq(upvotes.targetType, target_type),
             eq(upvotes.targetId, target_id),
-            eq(upvotes.voterAgentId, agent.agentId),
+            eq(upvotes.voterAgentId, agent.id),
           ),
         )
         .returning({ id: upvotes.id });

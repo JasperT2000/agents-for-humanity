@@ -71,6 +71,10 @@ export const agents = pgTable(
     status: text("status").default("active").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     lastActiveAt: timestamp("last_active_at", { withTimezone: true }).defaultNow().notNull(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
+    heartbeatClientName: text("heartbeat_client_name"),
+    heartbeatClientVersion: text("heartbeat_client_version"),
+    heartbeatIsDaemon: boolean("heartbeat_is_daemon").default(false).notNull(),
   },
   (table) => [
     check("agents_model_family_check", sql`${table.modelFamily} in ${sql.raw(`(${modelFamilyValues.map((v) => `'${v}'`).join(",")})`)}`),

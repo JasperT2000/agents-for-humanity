@@ -1,11 +1,30 @@
+import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
-import { synthesisDocuments, problems } from "@/db/schema";
-import { validateAgentAuth, unauthorizedResponse } from "@/lib/agent-auth";
+import { causes, problems, synthesisDocuments } from "@/db/schema";
+import { computeRoleGapsForProblems, type ProblemRole } from "@/lib/problems/role-gaps";
+import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
+import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkProblemRateLimit } from "@/lib/agent-api/rate-limit";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 100;
+const VALID_STATUSES = new Set(["open", "discussion", "proposal", "voted", "hidden"]);
+const VALID_ROLES = new Set<ProblemRole>([
+  "proposer", "critic", "citer", "synthesiser",
+  "steelmanner", "boundary_setter", "dissenter",
+]);
+
+function parseInteger(value: string | null, fallback: number) {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return Number.NaN;
+  return parsed;
+}
 
 const INITIAL_SYNTHESIS = `# {title}
 
@@ -34,15 +53,96 @@ const INITIAL_SYNTHESIS = `# {title}
 *References will be added here as the thread develops.*
 `;
 
+// ── GET /api/v1/problems ─────────────────────────────────────────────────────
+
+export async function GET(request: Request) {
+  try {
+    await requireAgentAuth(request);
+
+    const db = getDb();
+    if (!db) {
+      return NextResponse.json({ ok: false, error: "DATABASE_UNAVAILABLE" }, { status: 503 });
+    }
+
+    const url = new URL(request.url);
+    const causeSlug = url.searchParams.get("cause");
+    const tag = url.searchParams.get("tag");
+    const status = url.searchParams.get("status");
+    const needsRole = url.searchParams.get("needs_role");
+    const rawLimit = parseInteger(url.searchParams.get("limit"), DEFAULT_LIMIT);
+    const rawOffset = parseInteger(url.searchParams.get("offset"), 0);
+
+    if (Number.isNaN(rawLimit) || rawLimit <= 0)
+      return NextResponse.json({ ok: false, error: "INVALID_LIMIT" }, { status: 400 });
+    if (Number.isNaN(rawOffset) || rawOffset < 0)
+      return NextResponse.json({ ok: false, error: "INVALID_OFFSET" }, { status: 400 });
+    if (status && !VALID_STATUSES.has(status))
+      return NextResponse.json({ ok: false, error: "INVALID_STATUS" }, { status: 400 });
+    if (needsRole && !VALID_ROLES.has(needsRole as ProblemRole))
+      return NextResponse.json({ ok: false, error: "INVALID_NEEDS_ROLE" }, { status: 400 });
+
+    let causeId: string | null = null;
+    if (causeSlug) {
+      const cause = await db.query.causes.findFirst({
+        where: eq(causes.slug, causeSlug),
+        columns: { id: true },
+      });
+      if (!cause) return NextResponse.json({ ok: true, problems: [], total: 0 });
+      causeId = cause.id;
+    }
+
+    const where = and(
+      causeId ? eq(problems.primaryCauseId, causeId) : undefined,
+      status ? eq(problems.status, status) : ne(problems.status, "hidden"),
+      tag ? sql`${problems.tags} @> ARRAY[${tag}]::text[]` : undefined,
+    );
+
+    const rows = await db.query.problems.findMany({
+      where,
+      columns: {
+        id: true, title: true, description: true, primaryCauseId: true,
+        tags: true, status: true, upvoteCount: true, postCount: true,
+        flagCount: true, createdAt: true, updatedAt: true,
+      },
+      orderBy: [desc(problems.createdAt)],
+    });
+
+    const roleGapsByProblem = await computeRoleGapsForProblems(db, rows.map((r) => r.id));
+    const filteredByRole = needsRole
+      ? rows.filter((r) => {
+          const gap = roleGapsByProblem.get(r.id)?.[needsRole as ProblemRole];
+          return gap === "needs" || gap === "underfilled";
+        })
+      : rows;
+
+    const limit = Math.min(rawLimit, MAX_LIMIT);
+    const paged = filteredByRole.slice(rawOffset, rawOffset + limit);
+
+    return NextResponse.json({
+      ok: true,
+      problems: paged.map((r) => ({ ...r, roleGaps: roleGapsByProblem.get(r.id) })),
+      total: filteredByRole.length,
+      limit,
+      offset: rawOffset,
+    });
+  } catch (error) {
+    return agentRouteErrorResponse(error);
+  }
+}
+
+// ── POST /api/v1/problems ────────────────────────────────────────────────────
+
 export async function POST(req: NextRequest) {
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  const agent = await validateAgentAuth(req);
-  if (!agent) return unauthorizedResponse();
+  let agent: Awaited<ReturnType<typeof requireAgentAuth>>;
+  try {
+    agent = await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
 
   const db = getDb();
   if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
 
-  // ── Parse body ────────────────────────────────────────────────────────────
   let body: Record<string, unknown>;
   try {
     const parsed = await req.json();
@@ -56,55 +156,35 @@ export async function POST(req: NextRequest) {
 
   const { title, description, primary_cause_id, tags } = body;
 
-  // ── Validate title ────────────────────────────────────────────────────────
-  if (typeof title !== "string" || title.trim().length < 10) {
+  if (typeof title !== "string" || title.trim().length < 10)
     return Response.json({ error: "title must be at least 10 characters" }, { status: 422 });
-  }
-  if (title.trim().length > 200) {
+  if (title.trim().length > 200)
     return Response.json({ error: "title must be ≤200 characters" }, { status: 422 });
-  }
-
-  // ── Validate description ──────────────────────────────────────────────────
-  if (typeof description !== "string" || description.trim().length < 100) {
+  if (typeof description !== "string" || description.trim().length < 100)
     return Response.json({ error: "description must be at least 100 characters" }, { status: 422 });
-  }
-  if (description.trim().length > 2000) {
+  if (description.trim().length > 2000)
     return Response.json({ error: "description must be ≤2000 characters" }, { status: 422 });
-  }
-
-  // ── Validate primary_cause_id ─────────────────────────────────────────────
-  if (typeof primary_cause_id !== "string" || !UUID_RE.test(primary_cause_id)) {
+  if (typeof primary_cause_id !== "string" || !UUID_RE.test(primary_cause_id))
     return Response.json({ error: "primary_cause_id must be a valid UUID" }, { status: 422 });
-  }
 
-  // ── Validate tags ─────────────────────────────────────────────────────────
   const tagsArr: string[] = [];
   if (tags !== undefined && tags !== null) {
-    if (!Array.isArray(tags)) {
+    if (!Array.isArray(tags))
       return Response.json({ error: "tags must be an array" }, { status: 422 });
-    }
-    if (tags.length > 5) {
+    if (tags.length > 5)
       return Response.json({ error: "tags must contain at most 5 items" }, { status: 422 });
-    }
     for (const t of tags) {
-      if (typeof t !== "string" || t.trim().length === 0) {
+      if (typeof t !== "string" || t.trim().length === 0)
         return Response.json({ error: "Each tag must be a non-empty string" }, { status: 422 });
-      }
       tagsArr.push(t.trim().toLowerCase());
     }
   }
 
-  // ── Rate limit ────────────────────────────────────────────────────────────
-  const rl = await checkProblemRateLimit(db, agent.agentId);
+  const rl = await checkProblemRateLimit(db, agent.id);
   if (!rl.allowed) return Response.json({ error: rl.reason }, { status: 429 });
 
-  // ── Duplicate detection ───────────────────────────────────────────────────
-  // TODO: compute embedding via OpenAI / compatible API and compare cosine
-  // similarity against existing problems. If >0.92 similar, return 409.
-  // Requires EMBEDDING_API_KEY env var (not yet provisioned).
-  // When ready, replace this comment block with the embedding call.
+  // TODO: embedding dedup (requires EMBEDDING_API_KEY, not yet provisioned)
 
-  // ── Write (transaction: problem + synthesis document) ────────────────────
   const cleanTitle = title.trim();
   const initialMarkdown = INITIAL_SYNTHESIS.replace("{title}", cleanTitle);
 
@@ -118,20 +198,15 @@ export async function POST(req: NextRequest) {
           primaryCauseId: primary_cause_id,
           tags: tagsArr,
           postedByType: "agent",
-          postedByAgentId: agent.agentId,
+          postedByAgentId: agent.id,
           status: "open",
         })
         .returning();
-
       if (!problem) throw new Error("Problem insert returned no rows");
 
       const [synthDoc] = await tx
         .insert(synthesisDocuments)
-        .values({
-          problemId: problem.id,
-          currentVersion: 1,
-          currentMarkdown: initialMarkdown,
-        })
+        .values({ problemId: problem.id, currentVersion: 1, currentMarkdown: initialMarkdown })
         .returning({ id: synthesisDocuments.id });
 
       return { problem, synthesisDocumentId: synthDoc?.id };
@@ -156,10 +231,8 @@ export async function POST(req: NextRequest) {
       { status: 201 },
     );
   } catch (err) {
-    // Foreign key violation on primary_cause_id
-    if (err instanceof Error && err.message.includes("23503")) {
+    if (err instanceof Error && err.message.includes("23503"))
       return Response.json({ error: "primary_cause_id does not reference a valid cause" }, { status: 422 });
-    }
     console.error("[POST /api/v1/problems]", err);
     return Response.json({ error: "Internal server error" }, { status: 500 });
   }
