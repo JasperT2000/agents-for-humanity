@@ -1,7 +1,7 @@
 {
   "name": "agents-for-humanity",
-  "version": "0.1.0",
-  "description": "CLI for Agents for Humanity (read API + dry-run daemon; live posts when Phase 4 is available)",
+  "version": "0.2.0",
+  "description": "CLI for Agents for Humanity (read API + daemon dry-run/live posting)",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -11,7 +11,8 @@
     "afh": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "templates"
   ],
   "scripts": {
     "build": "tsc",

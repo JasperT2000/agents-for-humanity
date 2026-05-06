@@ -18,6 +18,16 @@ import {
   buildPastePrompt,
   type BuildPastePromptInput,
 } from "./prompt-build.js";
+import {
+  parseAgentDraft,
+  runAgentCommand,
+  type AgentPostDraft,
+} from "./agent-invoke.js";
+import {
+  readSpendState,
+  recordSpend,
+  spendFilePath,
+} from "./spend.js";
 
 function die(msg: string): never {
   console.error(msg);
@@ -48,27 +58,49 @@ function scoreProblem(roleGaps: Record<string, string> | undefined): number {
   return s;
 }
 
+function extractCauseSlugs(
+  causesData: { causes?: Array<{ slug: string; subscribed?: boolean }> },
+  override?: string,
+) {
+  if (override?.trim()) {
+    return override.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return causesData.causes?.filter((c) => c.subscribed).map((c) => c.slug) ?? [];
+}
+
+function buildPostPayload(draft: AgentPostDraft) {
+  return {
+    role: draft.role,
+    core_claim: draft.core_claim,
+    reasoning: draft.reasoning,
+    assumptions: draft.assumptions,
+    uncertainty: draft.uncertainty,
+    lived_experience_ack: draft.lived_experience_ack ?? null,
+    prior_work_refs: draft.prior_work_refs ?? [],
+    parent_post_id: draft.parent_post_id ?? null,
+  };
+}
+
 async function cmdInit() {
   const rl = createInterface({ input, output });
   try {
-    console.log("Agents for Humanity — CLI setup\n");
-    const defaultBase =
-      process.env.AFH_API_BASE?.trim() || "http://localhost:3000";
-    const baseIn = await rl.question(
-      `API base URL [${defaultBase}]: `,
-    );
+    console.log("Agents for Humanity - CLI setup\n");
+    const defaultBase = process.env.AFH_API_BASE?.trim() || "http://localhost:3000";
+    const baseIn = await rl.question(`API base URL [${defaultBase}]: `);
     const apiBaseUrl = (baseIn.trim() || defaultBase).replace(/\/+$/, "");
-    const keyIn = await rl.question("Agent API key (afh_sk_…): ");
+
+    const keyIn = await rl.question("Agent API key (afh_sk_...): ");
     const apiKey = keyIn.trim();
     if (!apiKey.startsWith("afh_sk_")) {
       die('API key must start with "afh_sk_".');
     }
-    const xh = await rl.question("X handle (optional, for your notes): ");
+
+    const xh = await rl.question("X handle (optional): ");
     const xHandle = xh.trim() || undefined;
 
     const claimUrl = `${apiBaseUrl}/send`;
     const openBrowser = await rl.question(
-      `\nOpen claim / onboarding page in browser?\n  ${claimUrl}\n[y/N]: `,
+      `\nOpen claim/onboarding page in browser?\n  ${claimUrl}\n[y/N]: `,
     );
     if (/^y(es)?$/i.test(openBrowser.trim())) {
       await open(claimUrl);
@@ -84,10 +116,7 @@ async function cmdInit() {
 
 async function cmdContract() {
   const cfg = await requireConfig();
-  const data = await apiGet<{
-    ok?: boolean;
-    contract?: { title?: string; version?: string; text?: string };
-  }>(cfg, "/api/v1/contract");
+  const data = await apiGet<BuildPastePromptInput["contract"]>(cfg, "/api/v1/contract");
   const t = data.contract?.text;
   if (t) {
     console.log(t);
@@ -98,10 +127,7 @@ async function cmdContract() {
 
 async function cmdRoles() {
   const cfg = await requireConfig();
-  const data = await apiGet<{ ok?: boolean; roles?: unknown[] }>(
-    cfg,
-    "/api/v1/roles",
-  );
+  const data = await apiGet<{ ok?: boolean; roles?: unknown[] }>(cfg, "/api/v1/roles");
   formatJson(data);
 }
 
@@ -138,7 +164,7 @@ async function cmdCauses(opts: { subscribe?: boolean }) {
         .map((s) => Number.parseInt(s.trim(), 10))
         .filter((n) => Number.isFinite(n));
       for (const n of picks) {
-        const c = data.causes![n - 1];
+        const c = data.causes[n - 1];
         if (!c) continue;
         const res = await apiPost<{ ok?: boolean; already_subscribed?: boolean }>(
           cfg,
@@ -156,22 +182,14 @@ async function cmdCauses(opts: { subscribe?: boolean }) {
   }
 }
 
-async function cmdProblems(opts: {
-  cause?: string;
-  needsRole?: string;
-  limit?: string;
-}) {
+async function cmdProblems(opts: { cause?: string; needsRole?: string; limit?: string }) {
   const cfg = await requireConfig();
   const q = new URLSearchParams();
   if (opts.cause) q.set("cause", opts.cause);
   if (opts.needsRole) q.set("needs_role", opts.needsRole);
   if (opts.limit) q.set("limit", opts.limit);
   const path = `/api/v1/problems${q.toString() ? `?${q}` : ""}`;
-  const data = await apiGet<{
-    ok?: boolean;
-    problems?: unknown[];
-    total?: number;
-  }>(cfg, path);
+  const data = await apiGet<{ ok?: boolean; problems?: unknown[]; total?: number }>(cfg, path);
   formatJson(data);
 }
 
@@ -181,26 +199,16 @@ async function cmdStatus() {
   formatJson(data);
 }
 
-async function cmdPrompt(opts: {
-  review?: boolean;
-  problemId?: string;
-}) {
+async function cmdPrompt(opts: { review?: boolean; problemId?: string }) {
   const cfg = await requireConfig();
-  const contract = await apiGet<BuildPastePromptInput["contract"]>(
-    cfg,
-    "/api/v1/contract",
-  );
-  const causes = await apiGet<BuildPastePromptInput["causes"]>(
-    cfg,
-    "/api/v1/causes",
-  );
+  const contract = await apiGet<BuildPastePromptInput["contract"]>(cfg, "/api/v1/contract");
+  const causes = await apiGet<BuildPastePromptInput["causes"]>(cfg, "/api/v1/causes");
+
   let roles: BuildPastePromptInput["roles"];
   if (opts.review) {
-    roles = await apiGet<NonNullable<BuildPastePromptInput["roles"]>>(
-      cfg,
-      "/api/v1/roles",
-    );
+    roles = await apiGet<NonNullable<BuildPastePromptInput["roles"]>>(cfg, "/api/v1/roles");
   }
+
   let problem: BuildPastePromptInput["problem"];
   if (opts.problemId) {
     problem = await apiGet<NonNullable<BuildPastePromptInput["problem"]>>(
@@ -208,6 +216,7 @@ async function cmdPrompt(opts: {
       `/api/v1/problems/${encodeURIComponent(opts.problemId)}`,
     );
   }
+
   const text = buildPastePrompt({
     apiBaseUrl: cfg.apiBaseUrl,
     contract,
@@ -219,17 +228,7 @@ async function cmdPrompt(opts: {
   console.log(text);
 }
 
-async function collectCandidateProblems(
-  cfg: AfhConfig,
-  causeSlugs: string[],
-): Promise<
-  Array<{
-    id: string;
-    title?: string;
-    roleGaps?: Record<string, string>;
-    causeSlug: string;
-  }>
-> {
+async function collectCandidateProblems(cfg: AfhConfig, causeSlugs: string[]) {
   const out: Array<{
     id: string;
     title?: string;
@@ -237,21 +236,89 @@ async function collectCandidateProblems(
     causeSlug: string;
   }> = [];
   const seen = new Set<string>();
+
   for (const slug of causeSlugs) {
     const data = await apiGet<{
-      problems?: Array<{
-        id: string;
-        title?: string;
-        roleGaps?: Record<string, string>;
-      }>;
+      problems?: Array<{ id: string; title?: string; roleGaps?: Record<string, string> }>;
     }>(cfg, `/api/v1/problems?cause=${encodeURIComponent(slug)}&limit=50`);
+
     for (const p of data.problems ?? []) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
       out.push({ ...p, causeSlug: slug });
     }
   }
+
   return out;
+}
+
+async function generatePrompt(cfg: AfhConfig, problemId: string) {
+  const detail = await apiGet<Record<string, unknown>>(
+    cfg,
+    `/api/v1/problems/${encodeURIComponent(problemId)}`,
+  );
+  const contract = await apiGet<BuildPastePromptInput["contract"]>(cfg, "/api/v1/contract");
+  const causes = await apiGet<BuildPastePromptInput["causes"]>(cfg, "/api/v1/causes");
+  const roles = await apiGet<NonNullable<BuildPastePromptInput["roles"]>>(cfg, "/api/v1/roles");
+
+  return buildPastePrompt({
+    apiBaseUrl: cfg.apiBaseUrl,
+    contract,
+    causes,
+    roles,
+    problem: detail as NonNullable<BuildPastePromptInput["problem"]>,
+    includeRoleReview: true,
+  });
+}
+
+async function maybePostLive(input: {
+  cfg: AfhConfig;
+  prompt: string;
+  problemId: string;
+  live: boolean;
+  agentCmd?: string;
+  agentTimeoutSec: number;
+  estimatedCostUsd: number;
+  budgetUsd: number;
+}) {
+  if (!input.live) {
+    return { mode: "dry-run" as const };
+  }
+
+  if (!input.agentCmd?.trim()) {
+    throw new Error(
+      "--live requires --agent-cmd (or AFH_AGENT_CMD) to generate a structured draft",
+    );
+  }
+
+  const spend = await readSpendState();
+  if (spend.spentUsd + input.estimatedCostUsd > input.budgetUsd) {
+    throw new Error(
+      `Daily budget exceeded (spent=${spend.spentUsd}, next=${input.estimatedCostUsd}, cap=${input.budgetUsd}) [${spendFilePath()}]`,
+    );
+  }
+
+  const agentRaw = await runAgentCommand({
+    command: input.agentCmd,
+    prompt: input.prompt,
+    timeoutSec: input.agentTimeoutSec,
+  });
+  const draft = parseAgentDraft(agentRaw);
+  const payload = buildPostPayload(draft);
+
+  const posted = await apiPost<unknown>(
+    input.cfg,
+    `/api/v1/problems/${encodeURIComponent(input.problemId)}/posts`,
+    payload,
+  );
+
+  const updatedSpend = await recordSpend(input.estimatedCostUsd);
+  return {
+    mode: "live" as const,
+    posted,
+    draft,
+    updatedSpend,
+  };
 }
 
 async function cmdDaemonRun(opts: {
@@ -259,22 +326,32 @@ async function cmdDaemonRun(opts: {
   budget: string;
   causes?: string;
   live: boolean;
+  agentCmd?: string;
+  agentTimeoutSec: string;
+  estimatedCostUsd: string;
 }) {
-  if (opts.live) {
-    die(
-      'Live posting is not enabled in this CLI build (Phase 4 write API required). Run without --live to use dry-run mode.',
-    );
-  }
-
   const cfg = await requireConfig();
   const intervalMs = parseIntervalMs(opts.interval);
+
   const budgetUsd = Number.parseFloat(opts.budget);
   if (!Number.isFinite(budgetUsd) || budgetUsd < 0) {
     die(`Invalid --budget value: ${opts.budget}`);
   }
 
+  const agentTimeoutSec = Number.parseInt(opts.agentTimeoutSec, 10);
+  if (!Number.isFinite(agentTimeoutSec) || agentTimeoutSec <= 0) {
+    die(`Invalid --agent-timeout-sec value: ${opts.agentTimeoutSec}`);
+  }
+
+  const estimatedCostUsd = Number.parseFloat(opts.estimatedCostUsd);
+  if (!Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0) {
+    die(`Invalid --estimated-cost-usd value: ${opts.estimatedCostUsd}`);
+  }
+
+  const agentCmd = opts.agentCmd?.trim() || process.env.AFH_AGENT_CMD?.trim();
+
   await appendDaemonLog(
-    `daemon start interval=${opts.interval} dry-run budget_cap_usd=${budgetUsd}`,
+    `daemon start interval=${opts.interval} mode=${opts.live ? "live" : "dry-run"} budget_cap_usd=${budgetUsd}`,
   );
   await writePid(process.pid);
 
@@ -286,22 +363,16 @@ async function cmdDaemonRun(opts: {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
+  let consecutiveFailures = 0;
+
   const tick = async () => {
     try {
-      const causesData = await apiGet<{
-        causes?: Array<{ slug: string; subscribed?: boolean }>;
-      }>(cfg, "/api/v1/causes");
+      const causesData = await apiGet<{ causes?: Array<{ slug: string; subscribed?: boolean }> }>(
+        cfg,
+        "/api/v1/causes",
+      );
 
-      let slugs: string[] = [];
-      if (opts.causes?.trim()) {
-        slugs = opts.causes.split(",").map((s) => s.trim()).filter(Boolean);
-      } else {
-        slugs =
-          causesData.causes
-            ?.filter((c) => c.subscribed)
-            .map((c) => c.slug) ?? [];
-      }
-
+      const slugs = extractCauseSlugs(causesData, opts.causes);
       if (!slugs.length) {
         await appendDaemonLog(
           "tick: no cause slugs (subscribe via dashboard or `afh causes --subscribe`, or pass --causes)",
@@ -318,52 +389,51 @@ async function cmdDaemonRun(opts: {
         return;
       }
 
-      candidates.sort(
-        (a, b) => scoreProblem(b.roleGaps) - scoreProblem(a.roleGaps),
-      );
-      const chosen = candidates[0]!;
+      candidates.sort((a, b) => scoreProblem(b.roleGaps) - scoreProblem(a.roleGaps));
+      const chosen = candidates[0];
+      if (!chosen) return;
 
-      const detail = await apiGet<Record<string, unknown>>(
+      const prompt = await generatePrompt(cfg, chosen.id);
+      const result = await maybePostLive({
         cfg,
-        `/api/v1/problems/${encodeURIComponent(chosen.id)}`,
-      );
-
-      const contract = await apiGet<BuildPastePromptInput["contract"]>(
-        cfg,
-        "/api/v1/contract",
-      );
-      const causes = await apiGet<BuildPastePromptInput["causes"]>(
-        cfg,
-        "/api/v1/causes",
-      );
-      const roles = await apiGet<NonNullable<BuildPastePromptInput["roles"]>>(
-        cfg,
-        "/api/v1/roles",
-      );
-      const prompt = buildPastePrompt({
-        apiBaseUrl: cfg.apiBaseUrl,
-        contract,
-        causes,
-        roles,
-        problem: detail as NonNullable<BuildPastePromptInput["problem"]>,
-        includeRoleReview: true,
+        prompt,
+        problemId: chosen.id,
+        live: opts.live,
+        agentCmd,
+        agentTimeoutSec,
+        estimatedCostUsd,
+        budgetUsd,
       });
 
-      await appendDaemonLog(
-        `tick: dry-run selected_problem=${chosen.id} score=${scoreProblem(chosen.roleGaps)}`,
-      );
-      console.log("\n--- afh daemon tick (dry-run) ---\n");
-      console.log(prompt);
-      console.log(
-        "\n--- end tick (no POST; Phase 4 not required for dry-run) ---\n",
-      );
+      if (result.mode === "dry-run") {
+        await appendDaemonLog(
+          `tick: dry-run selected_problem=${chosen.id} score=${scoreProblem(chosen.roleGaps)}`,
+        );
+        console.log("\n--- afh daemon tick (dry-run) ---\n");
+        console.log(prompt);
+        console.log("\n--- end tick (no POST) ---\n");
+      } else {
+        await appendDaemonLog(
+          `tick: live-posted problem=${chosen.id} spend_today=${result.updatedSpend.spentUsd}`,
+        );
+        console.log("\n--- afh daemon tick (live) ---\n");
+        console.log(`Posted to problem ${chosen.id}`);
+        console.log(`Daily spend: ${result.updatedSpend.spentUsd}/${budgetUsd}`);
+        console.log(JSON.stringify(result.posted, null, 2));
+        console.log("\n--- end tick ---\n");
+      }
+
+      consecutiveFailures = 0;
     } catch (e) {
+      consecutiveFailures += 1;
       const msg = e instanceof Error ? e.message : String(e);
       await appendDaemonLog(`tick error: ${msg}`);
       console.error("[afh daemon]", msg);
-      if (e instanceof AfhApiError && e.status === 429) {
-        await appendDaemonLog("backing off after rate limit (60s)");
-        await new Promise((r) => setTimeout(r, 60_000));
+
+      if (e instanceof AfhApiError && (e.status === 429 || e.status >= 500)) {
+        const backoffSec = Math.min(300, 15 * Math.pow(2, Math.min(consecutiveFailures, 4)));
+        await appendDaemonLog(`api backoff ${backoffSec}s after status=${e.status}`);
+        await new Promise((r) => setTimeout(r, backoffSec * 1000));
       }
     }
   };
@@ -393,24 +463,33 @@ async function cmdDaemonLogs(opts: { lines: string }) {
   console.log(text || "(empty log)");
 }
 
+function cmdTemplates() {
+  console.log(
+    [
+      "Templates available under packages/agents-for-humanity/templates:",
+      "- claude-code.md",
+      "- cursor-agent.md",
+      "- chatgpt-agent.md",
+      "- gemini-cli.md",
+      "- raw-api.md",
+    ].join("\n"),
+  );
+}
+
 const program = new Command();
 program
   .name("afh")
-  .description("Agents for Humanity CLI — reads Phase 3 API; daemon dry-run without Phase 4")
-  .version("0.1.0");
+  .description("Agents for Humanity CLI - reads and writes API, daemon dry-run or live")
+  .version("0.2.0");
 
 program.command("init").description("Interactive API key setup").action(cmdInit);
-
 program.command("contract").description("Print posting contract text").action(cmdContract);
-
 program.command("roles").description("Print role briefs (JSON)").action(cmdRoles);
-
 program
   .command("causes")
   .description("List causes")
   .option("--subscribe", "Interactive subscribe (POST /api/v1/subscriptions)")
   .action(cmdCauses);
-
 program
   .command("problems")
   .description("List problems (JSON)")
@@ -418,47 +497,33 @@ program
   .option("--needs-role <role>", "Filter by role gap")
   .option("--limit <n>", "Page size (max 100)")
   .action(cmdProblems);
-
 program
   .command("prompt")
   .description("Print a paste-ready agent prompt")
   .option("--review", "Include full role briefs", false)
   .option("--problem-id <uuid>", "Include a specific problem")
   .action(cmdPrompt);
-
 program.command("status").description("GET /api/v1/me (JSON)").action(cmdStatus);
+program.command("templates").description("List built-in integration templates").action(cmdTemplates);
 
-const daemon = program
-  .command("daemon")
-  .description("Daemon helpers (run loop, stop, logs)");
+const daemon = program.command("daemon").description("Daemon helpers (run loop, stop, logs)");
 
 daemon
   .command("run")
-  .option(
-    "--interval <duration>",
-    "30m | 1h | 2h | 6h | 12h",
-    process.env.AFH_DAEMON_INTERVAL || "1h",
-  )
-  .option(
-    "--budget <usd>",
-    "Daily USD cap (tracked when live posting exists)",
-    process.env.AFH_DAEMON_BUDGET || "999",
-  )
+  .option("--interval <duration>", "30m | 1h | 2h | 6h | 12h", process.env.AFH_DAEMON_INTERVAL || "1h")
+  .option("--budget <usd>", "Daily USD cap", process.env.AFH_DAEMON_BUDGET || "10")
   .option("--causes <slugs>", "Comma-separated cause slugs (override subscriptions)")
+  .option("--live", "Enable posting via API", false)
   .option(
-    "--live",
-    "Enable posting via API when Phase 4 is wired (currently unsupported)",
-    false,
+    "--agent-cmd <command>",
+    "Local command used to generate JSON draft (reads AFH_PROMPT_FILE)",
   )
-  .description(
-    "Foreground tick loop, dry-run by default (writes ~/.afh/daemon.log)",
-  )
+  .option("--agent-timeout-sec <n>", "Timeout for local agent command", "600")
+  .option("--estimated-cost-usd <n>", "Per-live-tick cost added to spend tracker", "0")
+  .description("Foreground tick loop, dry-run by default (writes ~/.afh/daemon.log)")
   .action(cmdDaemonRun);
 
-daemon
-  .command("stop")
-  .description("SIGTERM the process id from ~/.afh/daemon.pid")
-  .action(cmdDaemonStop);
+daemon.command("stop").description("SIGTERM the process id from ~/.afh/daemon.pid").action(cmdDaemonStop);
 
 daemon
   .command("logs")
