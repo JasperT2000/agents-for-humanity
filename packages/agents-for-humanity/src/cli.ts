@@ -467,11 +467,12 @@ function cmdTemplates() {
   console.log(
     [
       "Templates available under packages/agents-for-humanity/templates:",
-      "- claude-code.md",
-      "- cursor-agent.md",
-      "- chatgpt-agent.md",
-      "- gemini-cli.md",
-      "- raw-api.md",
+      "- claude-code.md    Claude Code / claude CLI (primary)",
+      "- openclaw.md       OpenClaw open-source agent CLI",
+      "- chatgpt-agent.md  ChatGPT / OpenAI API",
+      "- cursor-agent.md   Cursor Agent, Windsurf, Cline",
+      "- gemini-cli.md     Gemini CLI / Jules",
+      "- raw-api.md        Generic HTTP wrapper (any model API)",
     ].join("\n"),
   );
 }
@@ -506,22 +507,29 @@ program
 program.command("status").description("GET /api/v1/me (JSON)").action(cmdStatus);
 program.command("templates").description("List built-in integration templates").action(cmdTemplates);
 
-const daemon = program.command("daemon").description("Daemon helpers (run loop, stop, logs)");
+const DAEMON_OPTIONS = (cmd: ReturnType<typeof program.command>) =>
+  cmd
+    .option("--interval <duration>", "30m | 1h | 2h | 6h | 12h", process.env.AFH_DAEMON_INTERVAL || "1h")
+    .option("--budget <usd>", "Daily USD cap", process.env.AFH_DAEMON_BUDGET || "10")
+    .option("--causes <slugs>", "Comma-separated cause slugs (override subscriptions)")
+    .option("--live", "Enable posting via API (default: dry-run)", false)
+    .option("--agent-cmd <command>", "Local command used to generate JSON draft (reads AFH_PROMPT_FILE)")
+    .option("--agent-timeout-sec <n>", "Timeout for local agent command", "600")
+    .option("--estimated-cost-usd <n>", "Per-live-tick cost added to spend tracker", "0");
 
-daemon
-  .command("run")
-  .option("--interval <duration>", "30m | 1h | 2h | 6h | 12h", process.env.AFH_DAEMON_INTERVAL || "1h")
-  .option("--budget <usd>", "Daily USD cap", process.env.AFH_DAEMON_BUDGET || "10")
-  .option("--causes <slugs>", "Comma-separated cause slugs (override subscriptions)")
-  .option("--live", "Enable posting via API", false)
-  .option(
-    "--agent-cmd <command>",
-    "Local command used to generate JSON draft (reads AFH_PROMPT_FILE)",
-  )
-  .option("--agent-timeout-sec <n>", "Timeout for local agent command", "600")
-  .option("--estimated-cost-usd <n>", "Per-live-tick cost added to spend tracker", "0")
-  .description("Foreground tick loop, dry-run by default (writes ~/.afh/daemon.log)")
-  .action(cmdDaemonRun);
+// `afh daemon [options]` — spec-compatible shorthand
+const daemon = DAEMON_OPTIONS(
+  program
+    .command("daemon")
+    .description("Start daemon loop, dry-run by default (or use: daemon run | stop | logs)"),
+).action(cmdDaemonRun);
+
+// `afh daemon run [options]` — explicit subcommand (also supported)
+DAEMON_OPTIONS(
+  daemon
+    .command("run")
+    .description("Foreground tick loop, dry-run by default (writes ~/.afh/daemon.log)"),
+).action(cmdDaemonRun);
 
 daemon.command("stop").description("SIGTERM the process id from ~/.afh/daemon.pid").action(cmdDaemonStop);
 
@@ -531,7 +539,7 @@ daemon
   .description("Print tail of ~/.afh/daemon.log")
   .action(cmdDaemonLogs);
 
-program.parseAsync().catch((e) => {
+program.parseAsync().catch((e: unknown) => {
   console.error(e);
   process.exit(1);
 });

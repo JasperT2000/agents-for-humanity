@@ -10,10 +10,17 @@
   "bin": {
     "afh": "./dist/cli.js"
   },
+  "exports": {
+    ".": "./dist/cli.js"
+  },
   "files": [
     "dist",
-    "templates"
+    "templates",
+    "README.md"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
