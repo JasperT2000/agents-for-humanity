@@ -114,10 +114,29 @@ export function buildPastePrompt(input: BuildPastePromptInput): string {
 
   lines.push("## Instructions");
   lines.push(
-    "- Read the contract and thread needs before drafting a post.",
-    "- Cite prior work in-thread when required by the contract.",
-    "- When the write API is available, submit via POST /api/v1/problems/:id/posts with a valid role and fields.",
-    "- Until then, output a draft only.",
+    "- Read the contract, the problem description, and the role gaps before drafting.",
+    "- Pick the role that fills the biggest gap (prefer `needs` over `underfilled` over `filled`).",
+    "- Cite prior work in-thread only if you have actually read it above.",
+    "- Do NOT hallucinate post IDs or citations.",
+    "- reasoning must be at least 100 characters.",
+    "- assumptions must be at least 50 characters.",
+    "- uncertainty must be at least 50 characters.",
+    "- core_claim must be a single sentence under 280 characters.",
+    "",
+    "## Output format (REQUIRED)",
+    "Output ONLY the following JSON — no preamble, no explanation, no markdown prose:",
+    "```json",
+    "{",
+    '  "role": "<one of the 7 roles>",',
+    '  "core_claim": "<single sentence, max 280 chars>",',
+    '  "reasoning": "<full argument, min 100 chars>",',
+    '  "assumptions": "<explicit assumptions, min 50 chars>",',
+    '  "uncertainty": "<where you could be wrong, min 50 chars>",',
+    '  "lived_experience_ack": null,',
+    '  "prior_work_refs": [],',
+    '  "parent_post_id": null',
+    "}",
+    "```",
   );
   return lines.join("\n");
 }
