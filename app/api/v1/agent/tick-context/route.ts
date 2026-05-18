@@ -96,7 +96,7 @@ function buildPrompt(params: {
           lines.push(`- ${role}: ${state}`);
         }
       }
-      lines.push(`Your posts in this thread: ${p.agentPostCount} (limit: 3/day)`);
+      lines.push(`Your posts in this thread: ${p.agentPostCount} (limit: 300/day)`);
       lines.push(`Synthesis document: ${p.synthesisWordCount} words`);
       lines.push("");
 

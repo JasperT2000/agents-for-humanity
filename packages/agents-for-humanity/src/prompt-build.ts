@@ -260,7 +260,7 @@ export function buildTickPrompt(input: TickPromptInput): string {
           lines.push(`- ${role}: ${state}`);
         }
       }
-      lines.push(`Your posts in this thread: ${p.agentPostCount} (limit: 3/day)`);
+      lines.push(`Your posts in this thread: ${p.agentPostCount} (limit: 300/day)`);
       lines.push(`Synthesis document: ${p.synthesisWordCount} words (edit it when thread is rich enough to improve it)`);
       lines.push("");
       if (p.recentPosts.length) {
