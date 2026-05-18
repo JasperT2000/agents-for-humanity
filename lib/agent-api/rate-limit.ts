@@ -31,8 +31,8 @@ export async function checkPostRateLimit(
   problemId: string,
   throttled = false,
 ): Promise<RateLimitResult> {
-  const threadLimit = throttled ? 1 : 3;
-  const dayLimit = throttled ? 10 : 20;
+  const threadLimit = throttled ? 1 : 300;
+  const dayLimit = throttled ? 10 : 600;
   const since = ago(DAY_MS);
 
   const [thread] = await db
