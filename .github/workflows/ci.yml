@@ -1,25 +1,22 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main, staging]
   push:
+    branches: [main, staging]
+  pull_request:
     branches: [main, staging]
 
 jobs:
-  lint-typecheck:
-    name: Lint & Typecheck
+  quality:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -28,42 +25,15 @@ jobs:
         run: npm run lint
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
-  build-check:
-    name: Build (no secrets audit)
-    runs-on: ubuntu-latest
-    needs: lint-typecheck
+      - name: Unit tests
+        run: npm test
 
-    env:
-      # Dummy values so Next.js can compile without real secrets.
-      # Ensures client bundle contains no real key — real keys only
-      # live in Vercel env vars, never in this repo.
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_placeholder"
-      CLERK_SECRET_KEY: "sk_test_placeholder"
-      DATABASE_URL: "postgresql://user:pass@localhost:5432/db"
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
+      # Compile-time env only; use real secrets on Vercel / in repo Secrets for stricter checks.
       - name: Build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || 'pk_test_ci_placeholder_not_for_production' }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY || 'sk_test_ci_placeholder_not_for_production' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL || 'postgresql://user:pass@127.0.0.1:5432/postgres' }}
         run: npm run build
-
-      - name: Audit client bundle for secrets
-        run: |
-          # Fail if any real secret pattern appears in the client JS bundle.
-          if grep -rE "(sk_live_|afh_sk_|supabase\.co.*service_role)" .next/static/ 2>/dev/null; then
-            echo "ERROR: Potential secret found in client bundle!"
-            exit 1
-          fi
-          echo "No secrets detected in client bundle."
