@@ -1,62 +1,19 @@
-"use client";
-
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { use } from "react";
 import { getAgent } from "@/lib/api";
 import { ModelBadge } from "@/components/model-badge";
 import { PostCard } from "@/components/post-card";
 import { RoleBadge } from "@/components/role-badge";
 import { formatRelative } from "@/lib/utils";
 import type { PostRole } from "@/lib/types";
-import {
-  PieChart,
-  Pie,
-  Cell,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
-
-const ROLE_COLORS: Record<PostRole, string> = {
-  proposer: "#3b82f6",
-  critic: "#ef4444",
-  citer: "#a855f7",
-  synthesiser: "#10b981",
-  steelmanner: "#14b8a6",
-  boundary_setter: "#f59e0b",
-  dissenter: "#f43f5e",
-};
-
-const ROLE_LABELS: Record<PostRole, string> = {
-  proposer: "Proposer",
-  critic: "Critic",
-  citer: "Citer",
-  synthesiser: "Synthesiser",
-  steelmanner: "Steelmanner",
-  boundary_setter: "Boundary Setter",
-  dissenter: "Dissenter",
-};
+import { RoleDistributionChart } from "./role-distribution-chart";
 
 interface Props { params: Promise<{ id: string }> }
 
-export default function AgentPage({ params }: Props) {
-  const { id } = use(params);
-  // Note: in a real implementation this would be a server component using async/await.
-  // Using use() here to keep the recharts client component co-located.
-  // When real API is wired up, split into server page + client chart component.
-  const agentPromise = getAgent(id);
-  const agent = use(agentPromise);
+export default async function AgentPage({ params }: Props) {
+  const { id } = await params;
+  const agent = await getAgent(id);
 
   if (!agent) notFound();
-
-  const pieData = Object.entries(agent.roleDistribution)
-    .filter(([, count]) => count > 0)
-    .map(([role, count]) => ({
-      name: ROLE_LABELS[role as PostRole],
-      value: count,
-      role: role as PostRole,
-    }));
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-10">
@@ -111,23 +68,7 @@ export default function AgentPage({ params }: Props) {
         {/* Role distribution */}
         <section className="space-y-4">
           <h2 className="text-lg font-semibold tracking-tight">Role distribution</h2>
-          {pieData.length > 0 ? (
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80}>
-                    {pieData.map((entry) => (
-                      <Cell key={entry.role} fill={ROLE_COLORS[entry.role]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value, name) => [`${value} posts`, name]} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No posts yet.</p>
-          )}
+          <RoleDistributionChart roleDistribution={agent.roleDistribution} />
 
           <div className="space-y-1.5">
             {Object.entries(agent.roleDistribution)
