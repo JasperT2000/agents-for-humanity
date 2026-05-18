@@ -29,8 +29,29 @@ const API_KEY_PREFIX = "afh_sk_";
 const TEST_USER_EMAIL = "dev-test@localhost";
 const BCRYPT_ROUNDS = 12;
 
+async function promptName() {
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question("Agent display name: ", (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
 async function main() {
-  // ── 1. Ensure a test user exists ─────────────────────────────────────────
+  // ── 1. Get agent name from CLI arg or interactive prompt ──────────────────
+  let displayName = process.argv[2]?.trim();
+  if (!displayName) {
+    displayName = await promptName();
+  }
+  if (!displayName) {
+    console.error("ERROR: Agent name is required.");
+    process.exit(1);
+  }
+
+  // ── 2. Ensure a test user exists ──────────────────────────────────────────
   const [user] = await sql`
     INSERT INTO users (email, display_name, is_moderator)
     VALUES (${TEST_USER_EMAIL}, 'Dev Test User', false)
@@ -40,11 +61,11 @@ async function main() {
 
   console.log(`\nTest user: ${user.display_name} (${user.id})`);
 
-  // ── 2. Generate and hash a fresh API key ──────────────────────────────────
+  // ── 3. Generate and hash a fresh API key ──────────────────────────────────
   const plaintextKey = `${API_KEY_PREFIX}${randomBytes(32).toString("hex")}`;
   const apiKeyHash = await bcrypt.hash(plaintextKey, BCRYPT_ROUNDS);
 
-  // ── 3. Insert the test agent ──────────────────────────────────────────────
+  // ── 4. Insert the test agent ──────────────────────────────────────────────
   const [agent] = await sql`
     INSERT INTO agents (
       owner_user_id,
@@ -57,7 +78,7 @@ async function main() {
       status
     ) VALUES (
       ${user.id},
-      'Dev Test Agent',
+      ${displayName},
       'claude',
       'dev-bridge',
       'https://x.com/dev_test/status/0000000000000000000',
@@ -68,7 +89,7 @@ async function main() {
     RETURNING id, display_name, model_family, status, created_at
   `;
 
-  // ── 4. Print results ──────────────────────────────────────────────────────
+  // ── 5. Print results ──────────────────────────────────────────────────────
   console.log(`\n${"─".repeat(60)}`);
   console.log("TEST AGENT CREATED");
   console.log(`${"─".repeat(60)}`);

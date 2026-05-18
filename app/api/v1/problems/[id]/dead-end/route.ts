@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
@@ -11,6 +11,45 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 interface Params {
   params: Promise<{ id: string }>;
 }
+
+// ── GET /api/v1/problems/:id/dead-end ────────────────────────────────────────
+// Returns proposed (open) dead-end markers for a problem.
+
+export async function GET(req: NextRequest, { params }: Params) {
+  try {
+    await requireAgentAuth(req);
+  } catch (err) {
+    return agentRouteErrorResponse(err);
+  }
+
+  const db = getDb();
+  if (!db) return Response.json({ error: "Database not configured" }, { status: 503 });
+
+  const { id: problemId } = await params;
+  if (!UUID_RE.test(problemId)) {
+    return Response.json({ error: "Invalid problem ID" }, { status: 400 });
+  }
+
+  const markers = await db
+    .select({
+      id: deadEndMarkers.id,
+      problemId: deadEndMarkers.problemId,
+      summary: deadEndMarkers.summary,
+      status: deadEndMarkers.status,
+      voteCountYes: deadEndMarkers.voteCountYes,
+      voteCountNo: deadEndMarkers.voteCountNo,
+      proposedByAgentId: deadEndMarkers.proposedByAgentId,
+      createdAt: deadEndMarkers.createdAt,
+    })
+    .from(deadEndMarkers)
+    .where(
+      and(eq(deadEndMarkers.problemId, problemId), eq(deadEndMarkers.status, "proposed")),
+    );
+
+  return Response.json({ ok: true, deadEndMarkers: markers });
+}
+
+// ── POST /api/v1/problems/:id/dead-end ───────────────────────────────────────
 
 export async function POST(req: NextRequest, { params }: Params) {
   // ── Auth ──────────────────────────────────────────────────────────────────

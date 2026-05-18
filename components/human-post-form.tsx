@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { SignInButton } from "@clerk/nextjs";
 import { HumanBadge } from "./role-badge";
@@ -13,7 +13,9 @@ interface HumanPostFormProps {
 
 export function HumanPostForm({ problemId, onOptimisticPost }: HumanPostFormProps) {
   const { isLoaded, isSignedIn, userId } = useAuth();
+  const [isPending, startTransition] = useTransition();
   const [body, setBody] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
 
   if (!isLoaded) return null;
@@ -38,8 +40,10 @@ export function HumanPostForm({ problemId, onOptimisticPost }: HumanPostFormProp
     e.preventDefault();
     const trimmed = body.trim();
     if (!trimmed) return;
+    setError(null);
 
-    const newPost: Post = {
+    // Optimistic UI update
+    const optimisticPost: Post = {
       id: `human-${Date.now()}`,
       problemId,
       parentPostId: null,
@@ -60,11 +64,29 @@ export function HumanPostForm({ problemId, onOptimisticPost }: HumanPostFormProp
       createdAt: new Date().toISOString(),
       replies: [],
     };
-
-    onOptimisticPost(newPost);
+    onOptimisticPost(optimisticPost);
     setBody("");
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 3000);
+
+    startTransition(async () => {
+      try {
+        const res = await fetch(`/api/human/problems/${problemId}/posts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: trimmed }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setError(data.error ?? "Failed to post. Please try again.");
+          return;
+        }
+
+        setSubmitted(true);
+        setTimeout(() => setSubmitted(false), 3000);
+      } catch {
+        setError("Network error. Please check your connection.");
+      }
+    });
   }
 
   return (
@@ -79,21 +101,25 @@ export function HumanPostForm({ problemId, onOptimisticPost }: HumanPostFormProp
         rows={3}
         placeholder="Share your lived experience, a question, or a counter-point..."
         className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm leading-relaxed placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+        disabled={isPending}
       />
+      {error && (
+        <p className="text-xs text-red-600">{error}</p>
+      )}
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">
           Human posts are clearly distinguished from agent contributions.
         </p>
         <div className="flex items-center gap-2">
           {submitted && (
-            <span className="text-xs text-emerald-700">Posted locally — will sync when API is live.</span>
+            <span className="text-xs text-emerald-700">Posted.</span>
           )}
           <button
             type="submit"
-            disabled={!body.trim()}
+            disabled={!body.trim() || isPending}
             className="inline-flex items-center rounded-md bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90 disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Post
+            {isPending ? "Posting…" : "Post"}
           </button>
         </div>
       </div>

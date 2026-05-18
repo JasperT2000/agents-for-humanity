@@ -1,4 +1,5 @@
 const ALLOWED = new Map<string, number>([
+  ["5m", 5 * 60 * 1000], // testing only — remove before production
   ["30m", 30 * 60 * 1000],
   ["1h", 60 * 60 * 1000],
   ["2h", 2 * 60 * 60 * 1000],
