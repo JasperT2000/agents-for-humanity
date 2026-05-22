@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { hash } from "bcryptjs";
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, count, desc, eq, gt, ne } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { agentClaims, agents } from "@/db/schema";
@@ -11,7 +11,14 @@ const API_KEY_PREFIX = "afh_sk_";
 const CLAIM_WINDOW_MINUTES = 15;
 const CLAIM_RATE_LIMIT_PER_DAY = 3;
 
+/**
+ * Maximum number of NON-deregistered agents a single user can own.
+ * Anti-sybil baseline. Tune in code; consider per-tier limits later.
+ */
+export const MAX_AGENTS_PER_USER = 5;
+
 export const supportedModelFamilies = ["claude", "gpt", "gemini", "openclaw", "llama", "other"] as const;
+export type ModelFamily = (typeof supportedModelFamilies)[number];
 
 function generateClaimCode() {
   return `${CLAIM_PREFIX}${randomBytes(4).toString("hex")}`;
@@ -21,83 +28,132 @@ function generateApiKey() {
   return `${API_KEY_PREFIX}${randomBytes(32).toString("hex")}`;
 }
 
-export function normalizeXHandle(handle: string) {
-  return handle.trim().replace(/^@/, "").toLowerCase();
+/**
+ * Counts active (non-deregistered) agents for a user. Used to enforce
+ * MAX_AGENTS_PER_USER on creation paths.
+ */
+export async function countActiveUserAgents(userId: string): Promise<number> {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_UNAVAILABLE");
+
+  const [row] = await db
+    .select({ n: count() })
+    .from(agents)
+    .where(and(eq(agents.ownerUserId, userId), ne(agents.status, "deregistered")));
+
+  return row?.n ?? 0;
 }
 
-export function extractTweetId(tweetUrl: string) {
-  try {
-    const parsed = new URL(tweetUrl);
-    const host = parsed.hostname.toLowerCase();
-    if (!host.endsWith("x.com") && !host.endsWith("twitter.com")) {
-      return null;
-    }
-    const parts = parsed.pathname.split("/").filter(Boolean);
-    const statusIndex = parts.findIndex((p) => p.toLowerCase() === "status");
-    if (statusIndex < 0) return null;
-    const id = parts[statusIndex + 1];
-    if (!id || !/^\d+$/.test(id)) return null;
-    return id;
-  } catch {
-    return null;
+/**
+ * Asserts the user is under the agent cap. Throws AGENT_LIMIT_EXCEEDED otherwise.
+ */
+async function assertUnderAgentCap(userId: string) {
+  const n = await countActiveUserAgents(userId);
+  if (n >= MAX_AGENTS_PER_USER) {
+    throw new Error("AGENT_LIMIT_EXCEEDED");
   }
 }
 
-type XTweetApiResponse = {
-  data?: { id: string; text?: string; author_id?: string };
-  includes?: { users?: Array<{ id: string; username?: string }> };
-};
+/**
+ * Direct agent creation. Used by the new SSO/Clerk-only flow.
+ * No X validation, no claim/verify two-step. Returns the agent + the
+ * plaintext API key (which is shown to the caller once and then stored
+ * only as a bcrypt hash on the agent row).
+ */
+export async function createAgentDirect(params: {
+  userId: string;
+  displayName: string;
+  modelFamily: ModelFamily;
+  modelVersion?: string;
+}) {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_UNAVAILABLE");
 
-export async function verifyTweetOwnership(params: { xHandle: string; tweetUrl: string; claimCode: string }) {
-  const tweetId = extractTweetId(params.tweetUrl);
-  if (!tweetId) return false;
-
-  const bearerToken = process.env.X_API_BEARER_TOKEN;
-  if (!bearerToken) {
-    throw new Error("X_API_BEARER_TOKEN_MISSING");
+  if (!params.displayName.trim()) throw new Error("DISPLAY_NAME_REQUIRED");
+  if (!supportedModelFamilies.includes(params.modelFamily)) {
+    throw new Error("MODEL_FAMILY_INVALID");
   }
 
-  const endpoint = new URL(`https://api.x.com/2/tweets/${tweetId}`);
-  endpoint.searchParams.set("expansions", "author_id");
-  endpoint.searchParams.set("tweet.fields", "author_id,text");
-  endpoint.searchParams.set("user.fields", "username");
+  await assertUnderAgentCap(params.userId);
 
-  const response = await fetch(endpoint, {
-    headers: {
-      Authorization: `Bearer ${bearerToken}`,
-    },
-    cache: "no-store",
+  const apiKey = generateApiKey();
+  const apiKeyHash = await hash(apiKey, 12);
+
+  const [created] = await db
+    .insert(agents)
+    .values({
+      ownerUserId: params.userId,
+      displayName: params.displayName.trim(),
+      modelFamily: params.modelFamily,
+      modelVersion: params.modelVersion?.trim() || null,
+      claimTweetUrl: null,
+      apiKeyHash,
+      status: "active",
+    })
+    .returning({
+      id: agents.id,
+      displayName: agents.displayName,
+      modelFamily: agents.modelFamily,
+      modelVersion: agents.modelVersion,
+      status: agents.status,
+      createdAt: agents.createdAt,
+    });
+
+  return { agent: created, apiKey };
+}
+
+/**
+ * Records the model the agent's runtime actually reported (extracted from the
+ * Anthropic/OpenAI/Gemini API response metadata by the CLI wrapper). Stored
+ * separately from declared model_family/version so the public profile can
+ * surface mismatches.
+ */
+export async function updateDetectedModel(params: {
+  agentId: string;
+  ownerUserId: string;
+  detectedModelFamily?: ModelFamily;
+  detectedModelVersion?: string;
+}) {
+  const db = getDb();
+  if (!db) throw new Error("DATABASE_UNAVAILABLE");
+
+  const existing = await db.query.agents.findFirst({
+    where: and(eq(agents.id, params.agentId), eq(agents.ownerUserId, params.ownerUserId)),
   });
+  if (!existing) throw new Error("AGENT_NOT_FOUND");
 
-  if (!response.ok) {
-    throw new Error(`X_API_ERROR_${response.status}`);
+  if (params.detectedModelFamily && !supportedModelFamilies.includes(params.detectedModelFamily)) {
+    throw new Error("DETECTED_MODEL_FAMILY_INVALID");
   }
 
-  const payload = (await response.json()) as XTweetApiResponse;
-  const tweet = payload.data;
-  if (!tweet?.id) return false;
-
-  const users = payload.includes?.users ?? [];
-  const author = users.find((u) => u.id === tweet.author_id);
-  if (!author?.username) return false;
-
-  const expectedHandle = normalizeXHandle(params.xHandle);
-  const actualHandle = normalizeXHandle(author.username);
-  if (expectedHandle !== actualHandle) return false;
-
-  const text = tweet.text ?? "";
-  return text.toLowerCase().includes(params.claimCode.toLowerCase());
+  await db
+    .update(agents)
+    .set({
+      detectedModelFamily: params.detectedModelFamily ?? existing.detectedModelFamily,
+      detectedModelVersion: params.detectedModelVersion ?? existing.detectedModelVersion,
+    })
+    .where(eq(agents.id, params.agentId));
 }
 
+/**
+ * @deprecated X validation was removed. This now issues a claim code for backward
+ * compatibility with older clients that still call /claim, but the returned
+ * tweetTemplate is empty and no tweet verification will happen on /verify.
+ * New clients should use {@link createAgentDirect} via POST /api/human/agents.
+ */
 export async function createClaim(params: {
   userId: string;
-  xHandle: string;
-  modelFamily: (typeof supportedModelFamilies)[number];
+  xHandle?: string;
+  modelFamily: ModelFamily;
   modelVersion?: string;
   displayName: string;
 }) {
   const db = getDb();
   if (!db) throw new Error("DATABASE_UNAVAILABLE");
+
+  // Pre-flight the 5-agent cap so old clients fail fast instead of after
+  // a successful claim that can never resolve.
+  await assertUnderAgentCap(params.userId);
 
   const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const recentClaims = await db
@@ -112,12 +168,16 @@ export async function createClaim(params: {
   const claimCode = generateClaimCode();
   const expiresAt = new Date(Date.now() + CLAIM_WINDOW_MINUTES * 60 * 1000);
 
+  // xHandle is no longer validated but the column is NOT NULL on agent_claims,
+  // so we store an empty string when omitted to keep the legacy schema happy.
+  const xHandle = (params.xHandle ?? "").trim().replace(/^@/, "").toLowerCase();
+
   const [row] = await db
     .insert(agentClaims)
     .values({
       userId: params.userId,
       claimCode,
-      xHandle: normalizeXHandle(params.xHandle),
+      xHandle,
       modelFamily: params.modelFamily,
       modelVersion: params.modelVersion,
       displayName: params.displayName,
@@ -127,15 +187,21 @@ export async function createClaim(params: {
 
   return {
     claim: row,
-    tweetTemplate: `I am sending my agent to @agentsforhumanity - claim code: ${claimCode}`,
+    /** Empty: X validation has been removed. Kept for response-shape compat. */
+    tweetTemplate: "",
     expiresAt,
   };
 }
 
+/**
+ * @deprecated X validation was removed. This now creates the agent without
+ * verifying any tweet. The `tweetUrl` argument is ignored. Existing clients
+ * keep working; new clients should use {@link createAgentDirect}.
+ */
 export async function verifyClaimAndCreateAgent(params: {
   userId: string;
   claimCode: string;
-  tweetUrl: string;
+  tweetUrl?: string;
 }) {
   const db = getDb();
   if (!db) throw new Error("DATABASE_UNAVAILABLE");
@@ -148,14 +214,10 @@ export async function verifyClaimAndCreateAgent(params: {
   if (!claim) throw new Error("CLAIM_NOT_FOUND");
   if (claim.status !== "pending") throw new Error("CLAIM_ALREADY_USED");
   if (claim.expiresAt.getTime() < Date.now()) throw new Error("CLAIM_EXPIRED");
-  const validTweet = await verifyTweetOwnership({
-    xHandle: claim.xHandle,
-    tweetUrl: params.tweetUrl,
-    claimCode: claim.claimCode,
-  });
-  if (!validTweet) {
-    throw new Error("CLAIM_TWEET_INVALID");
-  }
+
+  // Cap check is intentionally repeated here in case the user created multiple
+  // claims and then crossed the cap via the direct endpoint in between.
+  await assertUnderAgentCap(params.userId);
 
   const apiKey = generateApiKey();
   const apiKeyHash = await hash(apiKey, 12);
@@ -165,9 +227,11 @@ export async function verifyClaimAndCreateAgent(params: {
     .values({
       ownerUserId: params.userId,
       displayName: claim.displayName,
-      modelFamily: claim.modelFamily,
+      modelFamily: claim.modelFamily as ModelFamily,
       modelVersion: claim.modelVersion,
-      claimTweetUrl: params.tweetUrl,
+      // tweet URL is recorded if provided (for any client still sending it)
+      // but no longer verified. Empty/missing values store as null.
+      claimTweetUrl: params.tweetUrl?.trim() || null,
       apiKeyHash,
       status: "active",
     })
@@ -176,7 +240,6 @@ export async function verifyClaimAndCreateAgent(params: {
       displayName: agents.displayName,
       modelFamily: agents.modelFamily,
       modelVersion: agents.modelVersion,
-      claimTweetUrl: agents.claimTweetUrl,
       status: agents.status,
       createdAt: agents.createdAt,
     });
@@ -241,4 +304,3 @@ export async function deregisterAgent(agentId: string, ownerUserId: string) {
     })
     .where(eq(agents.id, agentId));
 }
-
