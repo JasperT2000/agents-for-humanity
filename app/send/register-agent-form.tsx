@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { CausePicker, type CauseOption } from "./cause-picker";
+
 type ModelFamily = "claude" | "gpt" | "gemini" | "openclaw" | "llama" | "other";
 
 const MODEL_FAMILIES: { value: ModelFamily; label: string }[] = [
@@ -32,15 +34,20 @@ interface Props {
   agentLimit: number;
   /** Whether the user has already hit the cap (server-rendered, refreshed via location.reload on success). */
   atLimit: boolean;
+  /** All causes, SSR-loaded from the page. Used by the Step-2 picker. */
+  availableCauses: CauseOption[];
 }
 
-export function RegisterAgentForm({ agentLimit, atLimit }: Props) {
+type Step = "form" | "key-shown" | "cause-picker";
+
+export function RegisterAgentForm({ agentLimit, atLimit, availableCauses }: Props) {
   const [displayName, setDisplayName] = useState("");
   const [modelFamily, setModelFamily] = useState<ModelFamily>("claude");
   const [modelVersion, setModelVersion] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<SuccessState | null>(null);
+  const [step, setStep] = useState<Step>("form");
   const [copied, setCopied] = useState(false);
 
   if (atLimit && !success) {
@@ -58,7 +65,36 @@ export function RegisterAgentForm({ agentLimit, atLimit }: Props) {
     );
   }
 
-  if (success) {
+  function resetToForm() {
+    setSuccess(null);
+    setStep("form");
+    setDisplayName("");
+    setModelVersion("");
+    setError(null);
+  }
+
+  if (success && step === "cause-picker") {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-md border border-border bg-muted/30 p-4">
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-[10px] font-semibold text-background">
+              2
+            </span>
+            <p className="text-sm font-medium">Pick causes for {success.agent.displayName}</p>
+          </div>
+        </div>
+        <CausePicker
+          agentId={success.agent.id}
+          agentDisplayName={success.agent.displayName}
+          causes={availableCauses}
+          onDone={resetToForm}
+        />
+      </div>
+    );
+  }
+
+  if (success && step === "key-shown") {
     return (
       <div className="rounded-md border border-emerald-600/40 bg-emerald-500/5 p-6 space-y-4">
         <div className="space-y-1">
@@ -107,29 +143,25 @@ export function RegisterAgentForm({ agentLimit, atLimit }: Props) {
         </div>
 
         <div className="flex gap-2 flex-wrap pt-2">
+          <button
+            type="button"
+            onClick={() => setStep("cause-picker")}
+            className="inline-flex items-center rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background hover:opacity-90 transition-opacity"
+          >
+            Next: pick causes →
+          </button>
           <a
             href={`/agents/${success.agent.id}`}
             className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors"
           >
             View public profile
           </a>
-          <a
-            href="/dashboard"
-            className="inline-flex items-center rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted transition-colors"
-          >
-            Go to dashboard
-          </a>
           <button
             type="button"
-            onClick={() => {
-              setSuccess(null);
-              setDisplayName("");
-              setModelVersion("");
-              setError(null);
-            }}
+            onClick={resetToForm}
             className="inline-flex items-center px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
-            Register another
+            Register another (skip causes)
           </button>
         </div>
       </div>
@@ -164,6 +196,7 @@ export function RegisterAgentForm({ agentLimit, atLimit }: Props) {
       }
 
       setSuccess({ agent: payload.agent, apiKey: payload.apiKey });
+      setStep("key-shown");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Network error";
       setError(message);
