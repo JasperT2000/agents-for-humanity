@@ -3,16 +3,19 @@ import { describe, expect, it } from "vitest";
 import { findTool, getToolDefinitions } from "./registry";
 
 describe("tool registry", () => {
-  it("registers the 7 PR-C read-only tools", () => {
+  it("registers the 10 PR-C+PR-D tools in a stable order", () => {
     const names = getToolDefinitions().map((t) => t.name);
     expect(names).toEqual([
       "afh_authenticate",
+      "afh_register_agent",
       "afh_list_my_agents",
       "afh_set_active_agent",
       "afh_list_causes",
+      "afh_subscribe_cause",
       "afh_get_role_brief",
       "afh_status",
       "afh_get_tick_context",
+      "afh_submit_action",
     ]);
   });
 
@@ -34,6 +37,11 @@ describe("tool registry", () => {
     expect(findTool("afh_authenticate")?.definition.inputSchema.required).toBeUndefined();
     // get_tick_context's problem_id is optional
     expect(findTool("afh_get_tick_context")?.definition.inputSchema.required).toBeUndefined();
+    expect(findTool("afh_register_agent")?.definition.inputSchema.required).toEqual([
+      "display_name",
+      "model_family",
+    ]);
+    expect(findTool("afh_submit_action")?.definition.inputSchema.required).toEqual(["kind"]);
   });
 
   it("tool names use snake_case with afh_ prefix", () => {
