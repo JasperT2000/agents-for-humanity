@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { NextResponse } from "next/server";
 
 import { McpAuthError, requireMcpAuth } from "@/lib/mcp/auth";
@@ -10,15 +12,18 @@ import {
   isValidRequest,
   ok,
 } from "@/lib/mcp/jsonrpc";
-import { MCP_RESOURCE_PATH, originFromRequest } from "@/lib/mcp/metadata";
+import { originFromRequest } from "@/lib/mcp/metadata";
 
 export const dynamic = "force-dynamic";
 
 /**
- * MCP 2025-06-18 spec version we advertise on initialize. Update when we
- * upgrade implementations of new spec features.
+ * MCP protocol versions we know we are wire-compatible with. The methods
+ * implemented here (initialize, tools/list, ping, notifications/initialized)
+ * are unchanged across these revisions, so we echo back whatever a compatible
+ * client requests rather than forcing a single version.
  */
-const MCP_PROTOCOL_VERSION = "2025-06-18";
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
+const DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 
 const SERVER_INFO = {
   name: "agents-for-humanity",
@@ -30,6 +35,14 @@ const SERVER_INFO = {
 const SERVER_CAPABILITIES = {
   tools: { listChanged: false },
 };
+
+/**
+ * Per the MCP streamable HTTP spec the server returns Mcp-Session-Id on the
+ * initialize response and the client echoes it on subsequent requests. We are
+ * stateless (the session id is opaque and we don't track it server-side) — the
+ * id exists purely so clients that require it can satisfy their own bookkeeping.
+ */
+const MCP_SESSION_ID_HEADER = "Mcp-Session-Id";
 
 export async function POST(request: Request) {
   // Auth first. Per RFC 9728, on missing/invalid bearer return 401 with a
@@ -77,40 +90,52 @@ export async function POST(request: Request) {
   const responses: JsonRpcResponse[] = [];
   const requests = Array.isArray(raw) ? raw : [raw];
   const isBatched = Array.isArray(raw);
+  let isInitialize = false;
 
   for (const item of requests) {
     if (!isValidRequest(item)) {
       responses.push(err(null, JRPC_ERR.invalidRequest, "Invalid Request"));
       continue;
     }
+    if (item.method === "initialize") isInitialize = true;
     const result = await handleMethod(item);
     if (result && !isNotification(item)) responses.push(result);
   }
 
+  const responseHeaders: Record<string, string> = {};
+  // Issue a session id on every initialize so SDKs that require one are happy.
+  // The id is opaque; we don't validate it on subsequent requests in v1.
+  if (isInitialize) responseHeaders[MCP_SESSION_ID_HEADER] = randomUUID();
+
   if (responses.length === 0) {
     // All notifications, no response required.
-    return new NextResponse(null, { status: 202 });
+    return new NextResponse(null, { status: 202, headers: responseHeaders });
   }
 
-  return NextResponse.json(isBatched ? responses : responses[0]);
+  return NextResponse.json(isBatched ? responses : responses[0], {
+    headers: responseHeaders,
+  });
 }
 
 async function handleMethod(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
   const id = (req.id ?? null) as string | number | null;
   switch (req.method) {
-    case "initialize":
+    case "initialize": {
+      const requested = readProtocolVersion(req.params);
+      const protocolVersion = requested ?? DEFAULT_PROTOCOL_VERSION;
       return ok(id, {
-        protocolVersion: MCP_PROTOCOL_VERSION,
+        protocolVersion,
         capabilities: SERVER_CAPABILITIES,
         serverInfo: SERVER_INFO,
       });
+    }
     case "ping":
       return ok(id, {});
     case "tools/list":
       return ok(id, { tools: [] });
     case "notifications/initialized":
-      // Notification — no response. Just acknowledge auth so we don't log it
-      // as anomalous.
+      // Notification — no response. Just acknowledge so we don't log it as
+      // anomalous.
       return null;
     case "tools/call":
       return err(
@@ -123,21 +148,55 @@ async function handleMethod(req: JsonRpcRequest): Promise<JsonRpcResponse | null
   }
 }
 
+function readProtocolVersion(params: unknown): string | null {
+  if (typeof params !== "object" || params === null) return null;
+  const requested = (params as Record<string, unknown>).protocolVersion;
+  if (typeof requested !== "string") return null;
+  return (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+    ? requested
+    : null;
+}
+
 /**
- * GET on the MCP endpoint is used by some clients to test server reachability
- * (and per the spec it can return an SSE stream for server→client notifications,
- * which we don't yet support). For now respond with a hint pointing at the
- * protected-resource metadata.
+ * The streamable HTTP transport lets clients open a GET stream to receive
+ * server-initiated notifications via SSE. We don't push anything yet, but
+ * returning a valid (empty, immediately-closed) SSE stream is what the
+ * MCP TypeScript SDK expects — a 405 trips its "session broken" path and
+ * causes a refresh-token loop instead of a working connection.
+ *
+ * Bearer auth is required on this endpoint just like POST: a stream that
+ * could be opened anonymously would let unauthenticated clients receive
+ * notifications meant for the authed user once we start pushing any.
  */
 export async function GET(request: Request) {
-  const origin = originFromRequest(request);
-  return NextResponse.json(
-    {
-      message:
-        "Agents for Humanity MCP server. POST JSON-RPC 2.0 requests here with a Bearer token.",
-      resource: `${origin}${MCP_RESOURCE_PATH}`,
-      protected_resource_metadata: `${origin}/.well-known/oauth-protected-resource`,
+  try {
+    await requireMcpAuth(request);
+  } catch (error) {
+    if (error instanceof McpAuthError) {
+      const origin = originFromRequest(request);
+      return new NextResponse(null, {
+        status: 401,
+        headers: {
+          "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+        },
+      });
+    }
+    return new NextResponse(null, { status: 500 });
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      // SSE comment so middleboxes don't drop the empty body; then close.
+      controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+      controller.close();
     },
-    { status: 405, headers: { allow: "POST" } },
-  );
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
 }
