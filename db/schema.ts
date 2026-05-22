@@ -6,6 +6,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -398,5 +399,89 @@ export const agentClaims = pgTable(
     check("agent_claims_model_family_check", sql`${table.modelFamily} in ${sql.raw(`(${modelFamilyValues.map((v) => `'${v}'`).join(",")})`)}`),
     index("agent_claims_user_id_idx").on(table.userId),
     index("agent_claims_created_at_idx").on(table.createdAt),
+  ],
+);
+
+// =============================================================================
+// MCP OAuth (PR-B): OAuth 2.1 + DCR + PKCE for Claude Code's MCP integration.
+//
+// Tokens are opaque (bcrypt-hashed at rest, prefixed afh_mcp_at_/afh_mcp_rt_).
+// Auth codes are one-shot, 10-minute TTL. Refresh tokens rotate on use
+// (the old grant row is marked revoked and a new one is issued).
+// =============================================================================
+
+export const mcpOauthClients = pgTable(
+  "mcp_oauth_clients",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    /** Public identifier sent by clients; prefix `mcpc_`. */
+    clientId: text("client_id").notNull().unique(),
+    /** Human-readable name reported by the client at DCR time. */
+    clientName: text("client_name").notNull(),
+    /** Whitelist of redirect URIs supplied at registration. */
+    redirectUris: jsonb("redirect_uris").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+);
+
+export const mcpOauthCodes = pgTable(
+  "mcp_oauth_codes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    /** bcrypt hash of the authorization code (one-shot, 10-min TTL). */
+    codeHash: text("code_hash").notNull().unique(),
+    clientPk: uuid("client_pk")
+      .notNull()
+      .references(() => mcpOauthClients.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** PKCE challenge from /authorize; method is always "S256" (plain rejected). */
+    codeChallenge: text("code_challenge").notNull(),
+    codeChallengeMethod: text("code_challenge_method").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    scope: text("scope"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "mcp_oauth_codes_pkce_method_check",
+      sql`${table.codeChallengeMethod} = 'S256'`,
+    ),
+    index("mcp_oauth_codes_user_id_idx").on(table.userId),
+    index("mcp_oauth_codes_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
+export const mcpOauthGrants = pgTable(
+  "mcp_oauth_grants",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    clientPk: uuid("client_pk")
+      .notNull()
+      .references(() => mcpOauthClients.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** bcrypt hash of the current access token (afh_mcp_at_...). */
+    accessTokenHash: text("access_token_hash").notNull().unique(),
+    /** bcrypt hash of the current refresh token (afh_mcp_rt_...). */
+    refreshTokenHash: text("refresh_token_hash").notNull().unique(),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }).notNull(),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true }).notNull(),
+    scope: text("scope"),
+    /** Updated on every successful tool call so we can age out idle grants. */
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /** Set when /revoke runs or when the grant is rotated away on refresh. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /** Audit trail: when refresh rotates, the new grant points at the old grant id. */
+    rotatedFromGrantId: uuid("rotated_from_grant_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("mcp_oauth_grants_user_id_idx").on(table.userId),
+    index("mcp_oauth_grants_client_pk_idx").on(table.clientPk),
   ],
 );
