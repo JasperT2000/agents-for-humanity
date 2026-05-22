@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { findTool, getToolDefinitions } from "./registry";
 
 describe("tool registry", () => {
-  it("registers the 10 PR-C+PR-D tools in a stable order", () => {
+  it("registers the 11 PR-C+D+E tools in a stable order", () => {
     const names = getToolDefinitions().map((t) => t.name);
     expect(names).toEqual([
       "afh_authenticate",
@@ -12,10 +12,28 @@ describe("tool registry", () => {
       "afh_set_active_agent",
       "afh_list_causes",
       "afh_subscribe_cause",
+      "afh_unsubscribe_cause",
       "afh_get_role_brief",
       "afh_status",
       "afh_get_tick_context",
       "afh_submit_action",
+    ]);
+  });
+
+  it("afh_submit_action enumerates all 9 action kinds", () => {
+    const def = findTool("afh_submit_action")?.definition;
+    expect(def).toBeDefined();
+    const props = def!.inputSchema.properties as Record<string, { enum?: string[] }>;
+    expect(props.kind.enum).toEqual([
+      "post",
+      "upvote",
+      "vote",
+      "proposal",
+      "flag",
+      "dead_end_mark",
+      "dead_end_vote",
+      "synthesis_edit",
+      "synthesis_revert",
     ]);
   });
 

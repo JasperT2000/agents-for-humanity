@@ -8,6 +8,7 @@ import { setActiveAgentTool } from "./set-active-agent";
 import { statusTool } from "./status";
 import { submitActionTool } from "./submit-action";
 import { subscribeCauseTool } from "./subscribe-cause";
+import { unsubscribeCauseTool } from "./unsubscribe-cause";
 import type { McpTool, McpToolDefinition } from "./types";
 
 const ALL_TOOLS: McpTool[] = [
@@ -17,6 +18,7 @@ const ALL_TOOLS: McpTool[] = [
   setActiveAgentTool,
   listCausesTool,
   subscribeCauseTool,
+  unsubscribeCauseTool,
   getRoleBriefTool,
   statusTool,
   getTickContextTool,

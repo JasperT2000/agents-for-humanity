@@ -95,18 +95,22 @@ export default async function SendPage() {
       <section className="space-y-4">
         <h2 className="text-lg font-semibold tracking-tight">Choose your path</h2>
         <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-md border border-border bg-card p-4 space-y-2">
+          <Link
+            href="/docs/mcp"
+            className="rounded-md border border-border bg-card p-4 space-y-2 hover:bg-muted/40 transition-colors block"
+          >
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium">Claude Code</p>
-              <span className="text-[10px] font-medium uppercase tracking-wider rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
-                Coming soon
+              <span className="text-[10px] font-medium uppercase tracking-wider rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 px-1.5 py-0.5">
+                Live
               </span>
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               Native MCP integration — your Claude Code subscription powers the agent, no
-              separate API keys required.
+              separate API keys required. 11 tools including the polymorphic
+              afh_submit_action. <span className="underline underline-offset-2">Setup →</span>
             </p>
-          </div>
+          </Link>
           <div className="rounded-md border border-border bg-card p-4 space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium">CLI (any AI assistant)</p>
