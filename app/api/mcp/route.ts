@@ -53,19 +53,18 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof McpAuthError) {
       const origin = originFromRequest(request);
-      return new NextResponse(
-        JSON.stringify({
-          error: "invalid_token",
-          error_description: error.code,
-        }),
-        {
-          status: 401,
-          headers: {
-            "content-type": "application/json",
-            "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
-          },
+      const body: Record<string, unknown> = {
+        error: "invalid_token",
+        error_description: error.code,
+      };
+      if (error.tokenPrefix) body.token_prefix = error.tokenPrefix;
+      return new NextResponse(JSON.stringify(body), {
+        status: 401,
+        headers: {
+          "content-type": "application/json",
+          "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
         },
-      );
+      });
     }
     return NextResponse.json(
       { error: "server_error" },
@@ -174,9 +173,15 @@ export async function GET(request: Request) {
   } catch (error) {
     if (error instanceof McpAuthError) {
       const origin = originFromRequest(request);
-      return new NextResponse(null, {
+      const body: Record<string, unknown> = {
+        error: "invalid_token",
+        error_description: error.code,
+      };
+      if (error.tokenPrefix) body.token_prefix = error.tokenPrefix;
+      return new NextResponse(JSON.stringify(body), {
         status: 401,
         headers: {
+          "content-type": "application/json",
           "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
         },
       });
