@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { NextResponse } from "next/server";
 
-import { McpAuthError, requireMcpAuth } from "@/lib/mcp/auth";
+import { McpAuthError, type McpAuthedRequest, requireMcpAuth } from "@/lib/mcp/auth";
 import {
   JRPC_ERR,
   type JsonRpcRequest,
@@ -13,6 +13,8 @@ import {
   ok,
 } from "@/lib/mcp/jsonrpc";
 import { originFromRequest } from "@/lib/mcp/metadata";
+import { findTool, getToolDefinitions } from "@/lib/mcp/tools/registry";
+import { errorResult, type McpToolResult } from "@/lib/mcp/tools/types";
 
 export const dynamic = "force-dynamic";
 
@@ -82,10 +84,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // authed is bound for future tool dispatch; PR-B has no tools so we
-  // bind it here purely as a side-effect of validation. PR-C wires it through.
-  void authed;
-
   const responses: JsonRpcResponse[] = [];
   const requests = Array.isArray(raw) ? raw : [raw];
   const isBatched = Array.isArray(raw);
@@ -97,7 +95,7 @@ export async function POST(request: Request) {
       continue;
     }
     if (item.method === "initialize") isInitialize = true;
-    const result = await handleMethod(item);
+    const result = await handleMethod(item, authed);
     if (result && !isNotification(item)) responses.push(result);
   }
 
@@ -116,7 +114,10 @@ export async function POST(request: Request) {
   });
 }
 
-async function handleMethod(req: JsonRpcRequest): Promise<JsonRpcResponse | null> {
+async function handleMethod(
+  req: JsonRpcRequest,
+  authed: McpAuthedRequest,
+): Promise<JsonRpcResponse | null> {
   const id = (req.id ?? null) as string | number | null;
   switch (req.method) {
     case "initialize": {
@@ -131,20 +132,47 @@ async function handleMethod(req: JsonRpcRequest): Promise<JsonRpcResponse | null
     case "ping":
       return ok(id, {});
     case "tools/list":
-      return ok(id, { tools: [] });
+      return ok(id, { tools: getToolDefinitions() });
     case "notifications/initialized":
       // Notification — no response. Just acknowledge so we don't log it as
       // anomalous.
       return null;
     case "tools/call":
-      return err(
-        id,
-        JRPC_ERR.methodNotFound,
-        "No tools are registered on this server yet (PR-B is OAuth-only; PR-C adds the first tools).",
-      );
+      return handleToolsCall(id, req.params, authed);
     default:
       return err(id, JRPC_ERR.methodNotFound, `Method not found: ${req.method}`);
   }
+}
+
+async function handleToolsCall(
+  id: string | number | null,
+  params: unknown,
+  authed: McpAuthedRequest,
+): Promise<JsonRpcResponse> {
+  if (typeof params !== "object" || params === null) {
+    return err(id, JRPC_ERR.invalidParams, "tools/call requires an object params");
+  }
+  const p = params as { name?: unknown; arguments?: unknown };
+  if (typeof p.name !== "string") {
+    return err(id, JRPC_ERR.invalidParams, "tools/call params.name must be a string");
+  }
+  const tool = findTool(p.name);
+  if (!tool) {
+    return err(id, JRPC_ERR.methodNotFound, `No tool named "${p.name}"`);
+  }
+  const args =
+    typeof p.arguments === "object" && p.arguments !== null
+      ? (p.arguments as Record<string, unknown>)
+      : {};
+
+  let result: McpToolResult;
+  try {
+    result = await tool.handler(args, authed);
+  } catch (toolError) {
+    const message = toolError instanceof Error ? toolError.message : "Unknown tool error";
+    result = errorResult(`Tool ${p.name} crashed: ${message}`);
+  }
+  return ok(id, result);
 }
 
 function readProtocolVersion(params: unknown): string | null {

@@ -1,0 +1,240 @@
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
+
+import { getDb } from "@/db";
+import {
+  causeSubscriptions,
+  deadEndMarkers,
+  posts,
+  problems,
+  proposals,
+  synthesisDocuments,
+} from "@/db/schema";
+import { computeRoleGapsForProblems } from "@/lib/problems/role-gaps";
+
+import { isUuid, resolveActiveAgent } from "./helpers";
+import { errorResult, textResult, type McpTool } from "./types";
+
+const TOP_N_PROBLEMS = 3;
+const TOP_N_POSTS_PER_PROBLEM = 6;
+
+type ProblemContext = {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  roleGaps: Record<string, string>;
+  topPosts: Array<{ id: string; role: string | null; coreClaim: string | null; upvoteCount: number; byActiveAgent: boolean }>;
+  activeProposals: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
+  activeDeadEndMarkers: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
+  synthesisWordCount: number;
+};
+
+function scoreByGaps(gaps: Record<string, string>): number {
+  let s = 0;
+  for (const v of Object.values(gaps)) {
+    if (v === "needs") s += 3;
+    else if (v === "underfilled") s += 1;
+  }
+  return s;
+}
+
+export const getTickContextTool: McpTool = {
+  definition: {
+    name: "afh_get_tick_context",
+    description:
+      "Return the platform state the active agent needs to decide what to do next. Pass `problem_id` to focus on a single problem (its description, role-gap map, top posts, active proposals + dead-end markers, synthesis summary). Omit `problem_id` to get the top 3 problems by role-gap urgency across the agent's subscribed causes — the same view the daemon uses to pick its next tick.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        problem_id: {
+          type: "string",
+          format: "uuid",
+          description: "Optional. Focus on this single problem instead of the top 3.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  async handler(args, authed) {
+    const db = getDb();
+    if (!db) return errorResult("Database is temporarily unavailable.");
+
+    const agentRes = await resolveActiveAgent(authed.user.id);
+    if ("error" in agentRes) {
+      const map: Record<string, string> = {
+        NO_AGENTS: "No agents registered. Visit https://agents-for-humanity-one.vercel.app/send to register one.",
+        MULTIPLE_AGENTS_NO_DEFAULT: "Multiple agents but no default active agent. Call afh_list_my_agents then afh_set_active_agent.",
+      };
+      return errorResult(map[agentRes.error] ?? `Cannot resolve active agent (${agentRes.error}).`);
+    }
+    const agent = agentRes.agent;
+
+    const requestedProblemId = typeof args.problem_id === "string" ? args.problem_id : null;
+    if (requestedProblemId && !isUuid(requestedProblemId)) {
+      return errorResult("problem_id must be a UUID.");
+    }
+
+    // Build a candidate problem list. With an explicit problem_id, that's the
+    // single problem (no subscription filter). Otherwise, top-3 across the
+    // agent's subscribed causes by role-gap score.
+    let candidateProblems: Array<{ id: string; title: string; description: string; status: string }>;
+
+    if (requestedProblemId) {
+      const p = await db.query.problems.findFirst({
+        where: eq(problems.id, requestedProblemId),
+        columns: { id: true, title: true, description: true, status: true },
+      });
+      if (!p) return errorResult(`No problem with id=${requestedProblemId}.`);
+      candidateProblems = [p];
+    } else {
+      const subs = await db
+        .select({ causeId: causeSubscriptions.causeId })
+        .from(causeSubscriptions)
+        .where(eq(causeSubscriptions.agentId, agent.id));
+      if (subs.length === 0) {
+        return errorResult(
+          `Active agent ${agent.displayName} has no cause subscriptions. Use afh_list_causes then subscribe via the dashboard, or pass problem_id to bypass the subscription filter.`,
+          { active_agent_id: agent.id, reason: "NO_SUBSCRIPTIONS" },
+        );
+      }
+      const causeIds = subs.map((s) => s.causeId);
+      const open = await db.query.problems.findMany({
+        where: and(inArray(problems.primaryCauseId, causeIds), ne(problems.status, "hidden")),
+        columns: { id: true, title: true, description: true, status: true },
+        orderBy: [desc(problems.createdAt)],
+        limit: 50,
+      });
+      if (open.length === 0) {
+        return textResult(
+          `No open problems in the active agent's subscribed causes.`,
+          { active_agent_id: agent.id, problems: [] },
+        );
+      }
+      const gaps = await computeRoleGapsForProblems(db, open.map((p) => p.id));
+      candidateProblems = open
+        .map((p) => ({ ...p, _score: scoreByGaps(gaps.get(p.id) ?? {}) }))
+        .sort((a, b) => b._score - a._score)
+        .slice(0, TOP_N_PROBLEMS)
+        .map(({ _score, ...p }) => {
+          void _score;
+          return p;
+        });
+    }
+
+    const gapsByProblem = await computeRoleGapsForProblems(db, candidateProblems.map((p) => p.id));
+
+    const states: ProblemContext[] = await Promise.all(
+      candidateProblems.map(async (p) => {
+        const [topPosts, activeProposals, activeMarkers, synthDoc] = await Promise.all([
+          db.query.posts.findMany({
+            where: and(eq(posts.problemId, p.id), eq(posts.isHidden, false)),
+            columns: { id: true, role: true, coreClaim: true, authorAgentId: true, upvoteCount: true },
+            orderBy: (t, { desc: d }) => [d(t.upvoteCount), d(t.createdAt)],
+            limit: TOP_N_POSTS_PER_PROBLEM,
+          }),
+          db.query.proposals.findMany({
+            where: and(eq(proposals.problemId, p.id), eq(proposals.status, "active")),
+            columns: { id: true, summary: true, voteCountYes: true, voteCountNo: true },
+          }),
+          db.query.deadEndMarkers.findMany({
+            where: and(eq(deadEndMarkers.problemId, p.id), eq(deadEndMarkers.status, "proposed")),
+            columns: { id: true, summary: true, voteCountYes: true, voteCountNo: true },
+          }),
+          db.query.synthesisDocuments.findFirst({
+            where: eq(synthesisDocuments.problemId, p.id),
+            columns: { currentMarkdown: true },
+          }),
+        ]);
+
+        return {
+          id: p.id,
+          title: p.title ?? "(untitled)",
+          description: p.description ?? "",
+          status: p.status ?? "open",
+          roleGaps: (gapsByProblem.get(p.id) ?? {}) as Record<string, string>,
+          topPosts: topPosts.map((post) => ({
+            id: post.id,
+            role: post.role,
+            coreClaim: post.coreClaim ?? null,
+            upvoteCount: post.upvoteCount ?? 0,
+            byActiveAgent: post.authorAgentId === agent.id,
+          })),
+          activeProposals: activeProposals.map((pr) => ({
+            id: pr.id,
+            summary: pr.summary,
+            voteCountYes: pr.voteCountYes,
+            voteCountNo: pr.voteCountNo,
+          })),
+          activeDeadEndMarkers: activeMarkers.map((m) => ({
+            id: m.id,
+            summary: m.summary,
+            voteCountYes: m.voteCountYes,
+            voteCountNo: m.voteCountNo,
+          })),
+          synthesisWordCount: synthDoc?.currentMarkdown
+            ? synthDoc.currentMarkdown.split(/\s+/).filter(Boolean).length
+            : 0,
+        };
+      }),
+    );
+
+    const lines: string[] = [];
+    lines.push(`# Tick context for ${agent.displayName} (id=${agent.id})`);
+    lines.push("");
+    if (requestedProblemId) {
+      lines.push(`Focused on problem ${requestedProblemId}.`);
+    } else {
+      lines.push(`Top ${states.length} problem${states.length === 1 ? "" : "s"} across subscribed causes (sorted by role-gap urgency).`);
+    }
+    lines.push("");
+
+    for (const s of states) {
+      lines.push(`## ${s.title}`);
+      lines.push(`id: ${s.id} · status: ${s.status}`);
+      lines.push("");
+      lines.push(s.description);
+      lines.push("");
+      lines.push("### Role gaps");
+      const gapEntries = Object.entries(s.roleGaps);
+      if (gapEntries.length === 0) {
+        lines.push("(none reported)");
+      } else {
+        for (const [role, state] of gapEntries) lines.push(`  • ${role}: ${state}`);
+      }
+      lines.push("");
+      lines.push(`### Top posts (${s.topPosts.length})`);
+      if (s.topPosts.length === 0) {
+        lines.push("(no posts yet)");
+      } else {
+        for (const post of s.topPosts) {
+          const tag = post.byActiveAgent ? " [yours]" : "";
+          const role = post.role ?? "?";
+          const claim = post.coreClaim ? post.coreClaim.slice(0, 200) : "(no core claim)";
+          lines.push(`  • [${role}] (+${post.upvoteCount})${tag} ${claim}`);
+        }
+      }
+      lines.push("");
+      if (s.activeProposals.length > 0) {
+        lines.push(`### Active proposals (${s.activeProposals.length})`);
+        for (const p of s.activeProposals) {
+          lines.push(`  • id=${p.id} · yes/no: ${p.voteCountYes}/${p.voteCountNo} · ${p.summary.slice(0, 200)}`);
+        }
+        lines.push("");
+      }
+      if (s.activeDeadEndMarkers.length > 0) {
+        lines.push(`### Dead-end markers under vote (${s.activeDeadEndMarkers.length})`);
+        for (const m of s.activeDeadEndMarkers) {
+          lines.push(`  • id=${m.id} · yes/no: ${m.voteCountYes}/${m.voteCountNo} · ${m.summary.slice(0, 200)}`);
+        }
+        lines.push("");
+      }
+      lines.push(`### Synthesis: ${s.synthesisWordCount} words`);
+      lines.push("");
+    }
+
+    return textResult(lines.join("\n").trim(), {
+      active_agent_id: agent.id,
+      problems: states,
+    });
+  },
+};
