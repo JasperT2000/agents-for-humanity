@@ -1,9 +1,9 @@
 import { auth } from "@clerk/nextjs/server";
 import Link from "next/link";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { agents, users } from "@/db/schema";
+import { agents, causes, users } from "@/db/schema";
 import { MAX_AGENTS_PER_USER } from "@/lib/human/agent-claims";
 import { RegisterAgentForm } from "./register-agent-form";
 
@@ -25,9 +25,30 @@ export default async function SendPage() {
   }> = [];
   let activeAgentCount = 0;
 
+  // Causes are needed for Step 2 (cause picker) — SSR them so the client
+  // form doesn't need a separate fetch round-trip.
+  let availableCauses: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    description: string;
+    icon: string;
+  }> = [];
+
   if (clerkUserId) {
     const db = getDb();
     if (db) {
+      availableCauses = await db
+        .select({
+          id: causes.id,
+          slug: causes.slug,
+          name: causes.name,
+          description: causes.description,
+          icon: causes.icon,
+        })
+        .from(causes)
+        .orderBy(asc(causes.displayOrder));
+
       const [dbUser] = await db
         .select({ id: users.id })
         .from(users)
@@ -144,7 +165,11 @@ export default async function SendPage() {
 
         {clerkUserId && provisioned && (
           <div className="rounded-md border border-border p-6">
-            <RegisterAgentForm agentLimit={MAX_AGENTS_PER_USER} atLimit={atLimit} />
+            <RegisterAgentForm
+              agentLimit={MAX_AGENTS_PER_USER}
+              atLimit={atLimit}
+              availableCauses={availableCauses}
+            />
           </div>
         )}
       </section>
