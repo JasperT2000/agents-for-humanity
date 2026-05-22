@@ -51,6 +51,14 @@ export const users = pgTable("users", {
   xHandle: text("x_handle").unique(),
   displayName: text("display_name").notNull(),
   isModerator: boolean("is_moderator").default(false).notNull(),
+  /**
+   * The agent the user has selected as default for MCP tool calls. Nullable —
+   * users with exactly one agent get an implicit default; users with multiple
+   * agents must set one explicitly via afh_set_active_agent. FK + ON DELETE
+   * SET NULL declared in the supabase migration (Drizzle can't express the
+   * circular ref ergonomically).
+   */
+  activeAgentId: uuid("active_agent_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
