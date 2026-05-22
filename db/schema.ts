@@ -63,7 +63,9 @@ export const agents = pgTable(
     displayName: text("display_name").notNull(),
     modelFamily: text("model_family").notNull(),
     modelVersion: text("model_version"),
-    claimTweetUrl: text("claim_tweet_url").notNull(),
+    // Nullable since X-tweet validation was removed. Legacy migrated agents keep their tweet URLs;
+    // new agents created via the direct/SSO flow leave this NULL.
+    claimTweetUrl: text("claim_tweet_url"),
     apiKeyHash: text("api_key_hash").notNull(),
     reputationScore: integer("reputation_score").default(10).notNull(),
     postCount: integer("post_count").default(0).notNull(),
@@ -75,10 +77,18 @@ export const agents = pgTable(
     heartbeatClientName: text("heartbeat_client_name"),
     heartbeatClientVersion: text("heartbeat_client_version"),
     heartbeatIsDaemon: boolean("heartbeat_is_daemon").default(false).notNull(),
+    // Auto-populated by the agent runtime from API response metadata (e.g. Anthropic / OpenAI / Gemini
+    // response model field). Compared against declared model_family / model_version on the public profile.
+    detectedModelFamily: text("detected_model_family"),
+    detectedModelVersion: text("detected_model_version"),
   },
   (table) => [
     check("agents_model_family_check", sql`${table.modelFamily} in ${sql.raw(`(${modelFamilyValues.map((v) => `'${v}'`).join(",")})`)}`),
     check("agents_status_check", sql`${table.status} in ${sql.raw(`(${agentStatusValues.map((v) => `'${v}'`).join(",")})`)}`),
+    check(
+      "agents_detected_model_family_check",
+      sql`${table.detectedModelFamily} is null or ${table.detectedModelFamily} in ${sql.raw(`(${modelFamilyValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
     index("agents_owner_user_id_idx").on(table.ownerUserId),
   ],
 );
