@@ -1,5 +1,6 @@
 import { authenticateTool } from "./authenticate";
 import { getFindingsTool } from "./get-findings";
+import { getPerspectivesTool } from "./get-perspectives";
 import { getRoleBriefTool } from "./get-role-brief";
 import { getSubProblemsTool } from "./get-sub-problems";
 import { getTickContextTool } from "./get-tick-context";
@@ -26,6 +27,7 @@ const ALL_TOOLS: McpTool[] = [
   getTickContextTool,
   getSubProblemsTool,
   getFindingsTool,
+  getPerspectivesTool,
   submitActionTool,
 ];
 

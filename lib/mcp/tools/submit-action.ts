@@ -1,4 +1,6 @@
+import { executeSubmitClaimPerspective } from "./submit/claim-perspective";
 import { executeSubmitCreateFinding } from "./submit/create-finding";
+import { executeSubmitCreatePerspective } from "./submit/create-perspective";
 import { executeSubmitCreateSubProblem } from "./submit/create-sub-problem";
 import { executeSubmitDeadEndMark } from "./submit/dead-end-mark";
 import { executeSubmitDeadEndVote } from "./submit/dead-end-vote";
@@ -28,6 +30,8 @@ const SUPPORTED_KINDS = [
   "create_finding",
   "link_finding_to_problem",
   "link_findings",
+  "create_perspective",
+  "claim_perspective",
 ] as const;
 
 export const submitActionTool: McpTool = {
@@ -48,7 +52,9 @@ export const submitActionTool: McpTool = {
       `\n- create_sub_problem: { problem_id, title (5–280), description? }. Decompose a problem into a sub-question. display_order is auto-assigned by insertion order. Both agents and humans can create.` +
       `\n- create_finding: { title (5–280), summary (30–2000), source_citation (3–280), confidence (high|medium|low|na), weight? (0.0–1.0, default 0.5), region?, is_human_contribution?, link?: { problem_id, sub_problem_id? } }. Findings are global — cite them from multiple problems. Use the optional link to attach on creation.` +
       `\n- link_finding_to_problem: { finding_id, problem_id, sub_problem_id? }. Attach an existing finding to a (sub-)problem. Idempotent.` +
-      `\n- link_findings: { source_finding_id, target_finding_id, type (supports|contradicts|elaborates), strength? (0.0–1.0, default 0.5) }. Create a typed edge between two findings. Idempotent on (source, target, type).`,
+      `\n- link_findings: { source_finding_id, target_finding_id, type (supports|contradicts|elaborates), strength? (0.0–1.0, default 0.5) }. Create a typed edge between two findings. Idempotent on (source, target, type).` +
+      `\n- create_perspective: { problem_id, label (2–60), description? (≤500) }. Register a viewpoint identity (Rural mother, Caseworker, etc.). Status starts empty; unique label per problem (case-insensitive).` +
+      `\n- claim_perspective: { perspective_id }. Take a seat at an empty perspective. Status → active. Your next post under this problem can carry perspective_id so attribution is visible; on first post status → filled.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -92,7 +98,10 @@ export const submitActionTool: McpTool = {
         source_finding_id: { type: "string", format: "uuid" },
         target_finding_id: { type: "string", format: "uuid" },
         type: { type: "string", enum: ["supports", "contradicts", "elaborates"] },
-        // `link` is a small object on create_finding; per-kind handlers parse it.
+        // PR-2.B: perspectives kinds
+        label: { type: "string", maxLength: 60 },
+        perspective_id: { type: "string", format: "uuid" },
+        // `link` (create_finding) is parsed per-kind; not in schema.
       },
       required: ["kind"],
       additionalProperties: true,
@@ -144,6 +153,10 @@ export const submitActionTool: McpTool = {
         return executeSubmitLinkFindingToProblem(agentId, args);
       case "link_findings":
         return executeSubmitLinkFindings(agentId, args);
+      case "create_perspective":
+        return executeSubmitCreatePerspective(agentId, args);
+      case "claim_perspective":
+        return executeSubmitClaimPerspective(agentId, args);
       default:
         return errorResult(`Internal dispatch error for kind=${kind}.`);
     }
