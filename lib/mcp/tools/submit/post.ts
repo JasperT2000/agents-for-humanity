@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { agents, posts, problems, subProblems } from "@/db/schema";
 import { checkPostRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
+import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
 
 import { isUuid } from "../helpers";
 import { errorResult, textResult, type McpToolResult } from "../types";
@@ -31,6 +32,8 @@ export type SubmitPostInput = {
   parent_post_id?: unknown;
   /** Phase 1: optional — thread the post under a specific sub-problem. */
   sub_problem_id?: unknown;
+  /** Phase 2: optional — viewpoint identity the post is authored under. Must be filled by this agent. */
+  perspective_id?: unknown;
 };
 
 function buildBody(fields: {
@@ -89,6 +92,10 @@ export async function executeSubmitPost(
   if (subProblemIdRaw !== null && !isUuid(subProblemIdRaw)) {
     return errorResult("sub_problem_id must be a UUID or omitted.");
   }
+  const perspectiveIdRaw = typeof input.perspective_id === "string" ? input.perspective_id : null;
+  if (perspectiveIdRaw !== null && !isUuid(perspectiveIdRaw)) {
+    return errorResult("perspective_id must be a UUID or omitted.");
+  }
   if (!coreClaim) return errorResult("core_claim is required.");
   if (coreClaim.length > 280) return errorResult("core_claim must be at most 280 characters.");
   if (reasoning.length < 100 || reasoning.length > 3000) return errorResult("reasoning must be between 100 and 3000 characters.");
@@ -112,6 +119,28 @@ export async function executeSubmitPost(
       columns: { id: true },
     });
     if (!sp) return errorResult(`sub_problem_id ${subProblemIdRaw} does not belong to problem ${problemId}.`);
+  }
+
+  // If a perspective_id was supplied, validate it belongs to this problem AND is filled by this agent.
+  if (perspectiveIdRaw !== null) {
+    const pres = await resolveOwnedPerspective({
+      perspectiveId: perspectiveIdRaw,
+      problemId,
+      ownerAgentId: agentId,
+    });
+    if ("error" in pres) {
+      const map: Record<string, string> = {
+        PERSPECTIVE_NOT_FOUND: `perspective_id ${perspectiveIdRaw} not found.`,
+        PERSPECTIVE_NOT_IN_PROBLEM: `perspective_id ${perspectiveIdRaw} does not belong to problem ${problemId}, or you don't hold it. Use afh_submit_action kind=claim_perspective first (after kind=create_perspective if needed).`,
+        INVALID_INPUT: "perspective_id must be a UUID.",
+        DATABASE_UNAVAILABLE: "Database is temporarily unavailable.",
+        PROBLEM_NOT_FOUND: `Problem ${problemId} not found.`,
+        DUPLICATE_LABEL: "Internal error.",
+        ALREADY_FILLED: "Internal error.",
+        ALREADY_FILLED_BY_YOU: "Internal error.",
+      };
+      return errorResult(map[pres.error] ?? `Perspective check failed: ${pres.error}`);
+    }
   }
 
   if (problem.postCount > 3 && refs.length === 0) {
@@ -139,6 +168,7 @@ export async function executeSubmitPost(
         problemId,
         parentPostId: parentId,
         subProblemId: subProblemIdRaw,
+        perspectiveId: perspectiveIdRaw,
         authorType: "agent",
         authorAgentId: agentId,
         role: role as Role,
@@ -170,13 +200,20 @@ export async function executeSubmitPost(
     return post;
   });
 
+  // Outside the post-insert transaction: bump the perspective to "filled" on
+  // its first contribution (idempotent if already filled).
+  if (perspectiveIdRaw !== null) {
+    await markPerspectiveFilled(perspectiveIdRaw);
+  }
+
   return textResult(
-    `Posted to problem ${problemId} as role=${role}. Post id ${result.id}.`,
+    `Posted to problem ${problemId} as role=${role}${perspectiveIdRaw ? ` under perspective ${perspectiveIdRaw}` : ""}. Post id ${result.id}.`,
     {
       kind: "post",
       post_id: result.id,
       problem_id: problemId,
       role,
+      perspective_id: perspectiveIdRaw,
       created_at: result.createdAt,
     },
   );
