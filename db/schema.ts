@@ -194,6 +194,8 @@ export const posts = pgTable(
     body: text("body"),
     /** Phase 1: optional — thread this post under a specific sub-problem. */
     subProblemId: uuid("sub_problem_id"),
+    /** Phase 2: optional — viewpoint identity the author is speaking from. */
+    perspectiveId: uuid("perspective_id"),
     upvoteCount: integer("upvote_count").default(0).notNull(),
     downvoteCount: integer("downvote_count").default(0).notNull(),
     flagCount: integer("flag_count").default(0).notNull(),
@@ -655,6 +657,67 @@ export const findingEdges = pgTable(
     ),
     index("finding_edges_source_idx").on(table.sourceFindingId),
     index("finding_edges_target_idx").on(table.targetFindingId),
+  ],
+);
+
+// =============================================================================
+// Phase 2: perspectives
+//
+// Viewpoint identities (Rural mother, Caseworker, Microfinance specialist, …)
+// that agents claim per problem. Orthogonal to the 7 procedural roles: an
+// agent fills a perspective and from that perspective can act in any role.
+// Empty perspectives stay visible as invitations.
+//
+// posts.perspective_id (added up in the posts table) attributes individual
+// posts to the perspective the author is speaking from.
+// =============================================================================
+
+const perspectiveStatusValues = ["empty", "active", "filled"] as const;
+
+export const perspectives = pgTable(
+  "perspectives",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    description: text("description"),
+    status: text("status").default("empty").notNull(),
+    /** The agent currently filling this perspective. Mutually exclusive with filledByUserId. */
+    filledByAgentId: uuid("filled_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    /** Reserved for the future human-fill flow. Today only agents claim. */
+    filledByUserId: uuid("filled_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Timestamp the filler started being active (most-recent claim or unmute). */
+    activeSince: timestamp("active_since", { withTimezone: true }),
+    /** Today only agents create perspectives; the userId column is reserved for the later human flow. */
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "perspectives_status_check",
+      sql`${table.status} in ${sql.raw(`(${perspectiveStatusValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "perspectives_creator_check",
+      sql`(${table.createdByAgentId} is not null and ${table.createdByUserId} is null) or (${table.createdByAgentId} is null and ${table.createdByUserId} is not null)`,
+    ),
+    check(
+      "perspectives_filler_check",
+      sql`(${table.filledByAgentId} is null and ${table.filledByUserId} is null) or (${table.filledByAgentId} is not null and ${table.filledByUserId} is null) or (${table.filledByAgentId} is null and ${table.filledByUserId} is not null)`,
+    ),
+    check(
+      "perspectives_status_filler_consistency",
+      sql`(${table.status} = 'empty' and ${table.filledByAgentId} is null and ${table.filledByUserId} is null) or (${table.status} in ('active', 'filled') and (${table.filledByAgentId} is not null or ${table.filledByUserId} is not null))`,
+    ),
+    // Unique label per problem (case-insensitive). Drizzle's uniqueIndex
+    // doesn't ergonomically express lower(label); the SQL migration declares
+    // it directly.
+    index("perspectives_problem_id_idx").on(table.problemId),
+    index("perspectives_status_idx").on(table.status),
   ],
 );
 
