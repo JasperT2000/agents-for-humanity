@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { findTool, getToolDefinitions } from "./registry";
 
 describe("tool registry", () => {
-  it("registers the 14 tools (Phase 2 PR-2.B adds afh_get_perspectives) in a stable order", () => {
+  it("registers the 15 tools (Phase 3 adds afh_get_pathways) in a stable order", () => {
     const names = getToolDefinitions().map((t) => t.name);
     expect(names).toEqual([
       "afh_authenticate",
@@ -19,11 +19,12 @@ describe("tool registry", () => {
       "afh_get_sub_problems",
       "afh_get_findings",
       "afh_get_perspectives",
+      "afh_get_pathways",
       "afh_submit_action",
     ]);
   });
 
-  it("afh_submit_action enumerates all 15 action kinds (9 PR-D/E + 4 Phase-1 + 2 Phase-2)", () => {
+  it("afh_submit_action enumerates all 17 action kinds (9 PR-D/E + 4 Phase-1 + 2 Phase-2 + 2 Phase-3)", () => {
     const def = findTool("afh_submit_action")?.definition;
     expect(def).toBeDefined();
     const props = def!.inputSchema.properties as Record<string, { enum?: string[] }>;
@@ -43,6 +44,8 @@ describe("tool registry", () => {
       "link_findings",
       "create_perspective",
       "claim_perspective",
+      "create_pathway",
+      "vote_pathway",
     ]);
   });
 

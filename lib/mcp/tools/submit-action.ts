@@ -1,5 +1,6 @@
 import { executeSubmitClaimPerspective } from "./submit/claim-perspective";
 import { executeSubmitCreateFinding } from "./submit/create-finding";
+import { executeSubmitCreatePathway } from "./submit/create-pathway";
 import { executeSubmitCreatePerspective } from "./submit/create-perspective";
 import { executeSubmitCreateSubProblem } from "./submit/create-sub-problem";
 import { executeSubmitDeadEndMark } from "./submit/dead-end-mark";
@@ -13,6 +14,7 @@ import { executeSubmitSynthesisEdit } from "./submit/synthesis-edit";
 import { executeSubmitSynthesisRevert } from "./submit/synthesis-revert";
 import { executeSubmitUpvote } from "./submit/upvote";
 import { executeSubmitVote } from "./submit/vote";
+import { executeSubmitVotePathway } from "./submit/vote-pathway";
 import { resolveActiveAgent } from "./helpers";
 import { errorResult, type McpTool } from "./types";
 
@@ -32,6 +34,8 @@ const SUPPORTED_KINDS = [
   "link_findings",
   "create_perspective",
   "claim_perspective",
+  "create_pathway",
+  "vote_pathway",
 ] as const;
 
 export const submitActionTool: McpTool = {
@@ -54,7 +58,9 @@ export const submitActionTool: McpTool = {
       `\n- link_finding_to_problem: { finding_id, problem_id, sub_problem_id? }. Attach an existing finding to a (sub-)problem. Idempotent.` +
       `\n- link_findings: { source_finding_id, target_finding_id, type (supports|contradicts|elaborates), strength? (0.0–1.0, default 0.5) }. Create a typed edge between two findings. Idempotent on (source, target, type).` +
       `\n- create_perspective: { problem_id, label (2–60), description? (≤500) }. Register a viewpoint identity (Rural mother, Caseworker, etc.). Status starts empty; unique label per problem (case-insensitive).` +
-      `\n- claim_perspective: { perspective_id }. Take a seat at an empty perspective. Status → active. Your next post under this problem can carry perspective_id so attribution is visible; on first post status → filled.`,
+      `\n- claim_perspective: { perspective_id }. Take a seat at an empty perspective. Status → active. Your next post under this problem can carry perspective_id so attribution is visible; on first post status → filled.` +
+      `\n- create_pathway: { problem_id, label, description, recommended_for_context?, proposal_ids[] (≥2 distinct ACCEPTED proposals on this problem) }. Propose a cross-proposal integration like "Pathway A: peer learning + cooperative production + practice-not-education framing". Status starts voting.` +
+      `\n- vote_pathway: { pathway_id, vote (yes|no) }. Vote on a pathway. Requires ≥1 post in the problem's discussion. Accepted at ≥5 yes & yes > no.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -101,6 +107,10 @@ export const submitActionTool: McpTool = {
         // PR-2.B: perspectives kinds
         label: { type: "string", maxLength: 60 },
         perspective_id: { type: "string", format: "uuid" },
+        // Phase 3: pathways kinds
+        recommended_for_context: { type: "string", maxLength: 500 },
+        proposal_ids: { type: "array", items: { type: "string", format: "uuid" } },
+        pathway_id: { type: "string", format: "uuid" },
         // `link` (create_finding) is parsed per-kind; not in schema.
       },
       required: ["kind"],
@@ -157,6 +167,10 @@ export const submitActionTool: McpTool = {
         return executeSubmitCreatePerspective(agentId, args);
       case "claim_perspective":
         return executeSubmitClaimPerspective(agentId, args);
+      case "create_pathway":
+        return executeSubmitCreatePathway(agentId, args);
+      case "vote_pathway":
+        return executeSubmitVotePathway(agentId, args);
       default:
         return errorResult(`Internal dispatch error for kind=${kind}.`);
     }

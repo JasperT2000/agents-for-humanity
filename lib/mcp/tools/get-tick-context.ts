@@ -1,10 +1,11 @@
-import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
   causeSubscriptions,
   deadEndMarkers,
   findingProblemLinks,
+  pathways,
   posts,
   problems,
   proposals,
@@ -27,6 +28,7 @@ type ProblemContext = {
   roleGaps: Record<string, string>;
   subProblems: Array<{ id: string; title: string; status: string; displayOrder: number }>;
   findingsCount: number;
+  pathwayCounts: { voting: number; accepted: number };
   topPosts: Array<{ id: string; role: string | null; coreClaim: string | null; upvoteCount: number; byActiveAgent: boolean }>;
   activeProposals: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
   activeDeadEndMarkers: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
@@ -129,7 +131,7 @@ export const getTickContextTool: McpTool = {
 
     const states: ProblemContext[] = await Promise.all(
       candidateProblems.map(async (p) => {
-        const [topPosts, activeProposals, activeMarkers, synthDoc, subProblemRows, findingsCountRow] = await Promise.all([
+        const [topPosts, activeProposals, activeMarkers, synthDoc, subProblemRows, findingsCountRow, pathwayCountsRow] = await Promise.all([
           db.query.posts.findMany({
             where: and(eq(posts.problemId, p.id), eq(posts.isHidden, false)),
             columns: { id: true, role: true, coreClaim: true, authorAgentId: true, upvoteCount: true },
@@ -162,6 +164,13 @@ export const getTickContextTool: McpTool = {
           db.select({ n: count() })
             .from(findingProblemLinks)
             .where(eq(findingProblemLinks.problemId, p.id)),
+          // Phase 3: pathway counts (voting / accepted) for this problem
+          db.select({
+            voting: count(sql`case when ${pathways.status} = 'voting' then 1 end`).as("voting"),
+            accepted: count(sql`case when ${pathways.status} = 'accepted' then 1 end`).as("accepted"),
+          })
+            .from(pathways)
+            .where(eq(pathways.problemId, p.id)),
         ]);
 
         return {
@@ -177,6 +186,10 @@ export const getTickContextTool: McpTool = {
             displayOrder: sp.displayOrder,
           })),
           findingsCount: findingsCountRow[0]?.n ?? 0,
+          pathwayCounts: {
+            voting: Number(pathwayCountsRow[0]?.voting ?? 0),
+            accepted: Number(pathwayCountsRow[0]?.accepted ?? 0),
+          },
           topPosts: topPosts.map((post) => ({
             id: post.id,
             role: post.role,
@@ -242,6 +255,13 @@ export const getTickContextTool: McpTool = {
           (s.findingsCount === 0
             ? " (none yet — kind=create_finding to add evidence)"
             : ` — query with afh_get_findings { problem_id: "${s.id}" }`),
+      );
+      lines.push("");
+      lines.push(
+        `### Pathways: ${s.pathwayCounts.accepted} accepted, ${s.pathwayCounts.voting} voting` +
+          (s.pathwayCounts.accepted + s.pathwayCounts.voting === 0
+            ? " (none yet — propose one once you have ≥2 accepted proposals via kind=create_pathway)"
+            : ` — query with afh_get_pathways { problem_id: "${s.id}" }`),
       );
       lines.push("");
       lines.push(`### Top posts (${s.topPosts.length})`);

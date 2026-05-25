@@ -341,10 +341,15 @@ export const synthesisDocuments = pgTable(
       .unique(),
     currentVersion: integer("current_version").default(1).notNull(),
     currentMarkdown: text("current_markdown").notNull(),
+    /** Phase 3: pointer to the accepted pathway this synthesis recommends, if any. */
+    recommendedPathwayId: uuid("recommended_pathway_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index("synthesis_documents_problem_id_idx").on(table.problemId)],
+  (table) => [
+    index("synthesis_documents_problem_id_idx").on(table.problemId),
+    index("synthesis_documents_recommended_pathway_id_idx").on(table.recommendedPathwayId),
+  ],
 );
 
 export const synthesisVersions = pgTable(
@@ -721,6 +726,108 @@ export const perspectives = pgTable(
     // it directly.
     index("perspectives_problem_id_idx").on(table.problemId),
     index("perspectives_status_idx").on(table.status),
+  ],
+);
+
+// =============================================================================
+// Phase 3: pathways + convergence
+//
+// A pathway is a named cross-proposal integration ("Pathway A: peer learning
+// circles + cooperative production + practice-not-education framing") with
+// optional context guidance ("recommended for households with limited mobility
+// and no formal education"). Created by an agent or human, voted on by other
+// participants. ≥5 yes & yes > no → accepted, same threshold as proposals.
+//
+// pathway_proposals is a composite-PK join. pathway_votes records yes/no per
+// voter; one vote per agent and one per user per pathway.
+// =============================================================================
+
+const pathwayStatusValues = ["voting", "accepted", "rejected", "withdrawn"] as const;
+
+export const pathways = pgTable(
+  "pathways",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    /** "A", "B", or longer like "Pathway A — primary". Unique (case-insensitive) per problem. */
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    /** "limited mobility + no formal education", etc. Optional. */
+    recommendedForContext: text("recommended_for_context"),
+    status: text("status").default("voting").notNull(),
+    voteCountYes: integer("vote_count_yes").default(0).notNull(),
+    voteCountNo: integer("vote_count_no").default(0).notNull(),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "pathways_status_check",
+      sql`${table.status} in ${sql.raw(`(${pathwayStatusValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "pathways_creator_check",
+      sql`(${table.createdByAgentId} is not null and ${table.createdByUserId} is null) or (${table.createdByAgentId} is null and ${table.createdByUserId} is not null)`,
+    ),
+    // Unique (problem_id, lower(label)) is declared in the SQL migration directly
+    // because Drizzle's uniqueIndex helper doesn't ergonomically express lower(label).
+    index("pathways_problem_id_idx").on(table.problemId),
+    index("pathways_status_idx").on(table.status),
+  ],
+);
+
+export const pathwayProposals = pgTable(
+  "pathway_proposals",
+  {
+    pathwayId: uuid("pathway_id")
+      .notNull()
+      .references(() => pathways.id, { onDelete: "cascade" }),
+    proposalId: uuid("proposal_id")
+      .notNull()
+      .references(() => proposals.id, { onDelete: "cascade" }),
+    /** Display order within the pathway — "first this, then this, then this". */
+    displayOrder: integer("display_order").default(0).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Composite primary key (pathway_id, proposal_id) declared in the SQL migration.
+    index("pathway_proposals_proposal_id_idx").on(table.proposalId),
+  ],
+);
+
+export const pathwayVotes = pgTable(
+  "pathway_votes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    pathwayId: uuid("pathway_id")
+      .notNull()
+      .references(() => pathways.id, { onDelete: "cascade" }),
+    voterType: text("voter_type").notNull(),
+    voterAgentId: uuid("voter_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    voterUserId: uuid("voter_user_id").references(() => users.id, { onDelete: "set null" }),
+    vote: text("vote").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "pathway_votes_voter_type_check",
+      sql`${table.voterType} in ${sql.raw(`(${voterTypeValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "pathway_votes_vote_check",
+      sql`${table.vote} in ${sql.raw(`(${voteValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "pathway_votes_voter_check",
+      sql`(${table.voterType} = 'agent' and ${table.voterAgentId} is not null and ${table.voterUserId} is null) or (${table.voterType} = 'human' and ${table.voterUserId} is not null and ${table.voterAgentId} is null)`,
+    ),
+    // Partial-unique indexes on (pathway_id, voter_agent_id) WHERE voter_agent_id IS NOT NULL
+    // and (pathway_id, voter_user_id) WHERE voter_user_id IS NOT NULL are declared in the SQL
+    // migration directly.
   ],
 );
 

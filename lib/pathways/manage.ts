@@ -1,0 +1,392 @@
+import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
+
+import { getDb } from "@/db";
+import {
+  pathwayProposals,
+  pathwayVotes,
+  pathways,
+  posts,
+  problems,
+  proposals,
+} from "@/db/schema";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+export const PATHWAY_LABEL_MIN = 1;
+export const PATHWAY_LABEL_MAX = 60;
+export const PATHWAY_DESCRIPTION_MIN = 30;
+export const PATHWAY_DESCRIPTION_MAX = 2000;
+export const PATHWAY_CONTEXT_MAX = 500;
+export const PATHWAY_MIN_PROPOSALS = 2;
+export const PATHWAY_ACCEPT_YES_THRESHOLD = 5;
+
+export const PATHWAY_STATUS_VALUES = ["voting", "accepted", "rejected", "withdrawn"] as const;
+export type PathwayStatus = (typeof PATHWAY_STATUS_VALUES)[number];
+
+export type ManageError =
+  | "PROBLEM_NOT_FOUND"
+  | "PATHWAY_NOT_FOUND"
+  | "DUPLICATE_LABEL"
+  | "TOO_FEW_PROPOSALS"
+  | "PROPOSAL_NOT_FOUND"
+  | "PROPOSAL_NOT_IN_PROBLEM"
+  | "PROPOSAL_NOT_ACCEPTED"
+  | "PATHWAY_NOT_VOTING"
+  | "ALREADY_VOTED"
+  | "VOTER_NOT_ENGAGED"
+  | "INVALID_INPUT"
+  | "DATABASE_UNAVAILABLE";
+
+// =============================================================================
+// Create
+// =============================================================================
+
+export async function createPathway(params: {
+  problemId: string;
+  label: string;
+  description: string;
+  recommendedForContext?: string;
+  proposalIds: string[];
+  createdByAgentId?: string;
+  createdByUserId?: string;
+}): Promise<
+  | {
+      pathway: {
+        id: string;
+        label: string;
+        status: PathwayStatus;
+        createdAt: Date;
+      };
+      proposals_attached: number;
+    }
+  | { error: ManageError; detail?: string }
+> {
+  if (!isUuid(params.problemId)) return { error: "INVALID_INPUT", detail: "problem_id must be a UUID" };
+  const label = params.label.trim();
+  if (label.length < PATHWAY_LABEL_MIN || label.length > PATHWAY_LABEL_MAX) {
+    return { error: "INVALID_INPUT", detail: `label ${PATHWAY_LABEL_MIN}–${PATHWAY_LABEL_MAX} chars` };
+  }
+  const description = params.description.trim();
+  if (description.length < PATHWAY_DESCRIPTION_MIN || description.length > PATHWAY_DESCRIPTION_MAX) {
+    return { error: "INVALID_INPUT", detail: `description ${PATHWAY_DESCRIPTION_MIN}–${PATHWAY_DESCRIPTION_MAX} chars` };
+  }
+  const context = params.recommendedForContext?.trim() || null;
+  if (context && context.length > PATHWAY_CONTEXT_MAX) {
+    return { error: "INVALID_INPUT", detail: `recommended_for_context ≤${PATHWAY_CONTEXT_MAX} chars` };
+  }
+  const uniqueProposalIds = Array.from(new Set(params.proposalIds));
+  if (uniqueProposalIds.length < PATHWAY_MIN_PROPOSALS) {
+    return { error: "TOO_FEW_PROPOSALS", detail: `at least ${PATHWAY_MIN_PROPOSALS} distinct proposals required` };
+  }
+  for (const id of uniqueProposalIds) {
+    if (!isUuid(id)) return { error: "INVALID_INPUT", detail: "every proposal_id must be a UUID" };
+  }
+  const hasAgent = typeof params.createdByAgentId === "string";
+  const hasUser = typeof params.createdByUserId === "string";
+  if (hasAgent === hasUser) return { error: "INVALID_INPUT", detail: "exactly one of createdByAgentId / createdByUserId" };
+
+  const db = getDb();
+  if (!db) return { error: "DATABASE_UNAVAILABLE" };
+
+  // Problem exists?
+  const problem = await db.query.problems.findFirst({
+    where: eq(problems.id, params.problemId),
+    columns: { id: true },
+  });
+  if (!problem) return { error: "PROBLEM_NOT_FOUND" };
+
+  // Dup label?
+  const dup = await db
+    .select({ id: pathways.id })
+    .from(pathways)
+    .where(and(eq(pathways.problemId, params.problemId), sql`lower(${pathways.label}) = lower(${label})`));
+  if (dup.length > 0) {
+    return { error: "DUPLICATE_LABEL", detail: `"${label}" already exists on this problem` };
+  }
+
+  // All proposals exist + belong to problem + are accepted
+  const found = await db
+    .select({
+      id: proposals.id,
+      problemId: proposals.problemId,
+      status: proposals.status,
+    })
+    .from(proposals)
+    .where(inArray(proposals.id, uniqueProposalIds));
+
+  if (found.length !== uniqueProposalIds.length) {
+    const foundSet = new Set(found.map((p) => p.id));
+    const missing = uniqueProposalIds.filter((id) => !foundSet.has(id));
+    return { error: "PROPOSAL_NOT_FOUND", detail: `missing proposal(s): ${missing.join(", ")}` };
+  }
+  const wrongProblem = found.filter((p) => p.problemId !== params.problemId);
+  if (wrongProblem.length > 0) {
+    return {
+      error: "PROPOSAL_NOT_IN_PROBLEM",
+      detail: `proposal(s) belong to a different problem: ${wrongProblem.map((p) => p.id).join(", ")}`,
+    };
+  }
+  const notAccepted = found.filter((p) => p.status !== "accepted");
+  if (notAccepted.length > 0) {
+    return {
+      error: "PROPOSAL_NOT_ACCEPTED",
+      detail: `proposal(s) not accepted yet (status=${notAccepted[0].status}): ${notAccepted.map((p) => p.id).join(", ")}. Only accepted proposals can compose a pathway.`,
+    };
+  }
+
+  // All good — insert pathway + the join rows
+  const result = await db.transaction(async (tx) => {
+    const [pathway] = await tx
+      .insert(pathways)
+      .values({
+        problemId: params.problemId,
+        label,
+        description,
+        recommendedForContext: context,
+        status: "voting",
+        createdByAgentId: params.createdByAgentId ?? null,
+        createdByUserId: params.createdByUserId ?? null,
+      })
+      .returning({ id: pathways.id, label: pathways.label, status: pathways.status, createdAt: pathways.createdAt });
+
+    await tx.insert(pathwayProposals).values(
+      uniqueProposalIds.map((proposalId, idx) => ({
+        pathwayId: pathway.id,
+        proposalId,
+        displayOrder: idx,
+      })),
+    );
+
+    return pathway;
+  });
+
+  return {
+    pathway: {
+      id: result.id,
+      label: result.label,
+      status: result.status as PathwayStatus,
+      createdAt: result.createdAt,
+    },
+    proposals_attached: uniqueProposalIds.length,
+  };
+}
+
+// =============================================================================
+// Vote
+// =============================================================================
+
+export async function votePathway(params: {
+  pathwayId: string;
+  vote: "yes" | "no";
+  voterAgentId?: string;
+  voterUserId?: string;
+}): Promise<
+  | {
+      pathway_id: string;
+      vote: "yes" | "no";
+      already_voted: boolean;
+      now_accepted: boolean;
+    }
+  | { error: ManageError; detail?: string }
+> {
+  if (!isUuid(params.pathwayId)) return { error: "INVALID_INPUT", detail: "pathway_id must be a UUID" };
+  if (params.vote !== "yes" && params.vote !== "no") {
+    return { error: "INVALID_INPUT", detail: 'vote must be "yes" or "no"' };
+  }
+  const hasAgent = typeof params.voterAgentId === "string";
+  const hasUser = typeof params.voterUserId === "string";
+  if (hasAgent === hasUser) return { error: "INVALID_INPUT", detail: "exactly one of voterAgentId / voterUserId" };
+
+  const db = getDb();
+  if (!db) return { error: "DATABASE_UNAVAILABLE" };
+
+  // Load pathway
+  const [pathway] = await db
+    .select({
+      id: pathways.id,
+      problemId: pathways.problemId,
+      status: pathways.status,
+      voteCountYes: pathways.voteCountYes,
+      voteCountNo: pathways.voteCountNo,
+    })
+    .from(pathways)
+    .where(eq(pathways.id, params.pathwayId));
+  if (!pathway) return { error: "PATHWAY_NOT_FOUND" };
+  if (pathway.status !== "voting") return { error: "PATHWAY_NOT_VOTING", detail: `pathway is ${pathway.status}` };
+
+  // Voter must be engaged in the problem (≥1 post)
+  const postCountClause = hasAgent
+    ? and(eq(posts.problemId, pathway.problemId), eq(posts.authorAgentId, params.voterAgentId!))
+    : and(eq(posts.problemId, pathway.problemId), eq(posts.authorUserId, params.voterUserId!));
+  const [{ n }] = await db.select({ n: count() }).from(posts).where(postCountClause);
+  if (n < 1) {
+    return {
+      error: "VOTER_NOT_ENGAGED",
+      detail: "You must have ≥1 post in this problem's discussion before voting on its pathways.",
+    };
+  }
+
+  // Existing vote? (idempotent: same-vote → no-op; different vote not allowed in v1, reject as ALREADY_VOTED)
+  const existing = await db
+    .select({ id: pathwayVotes.id, vote: pathwayVotes.vote })
+    .from(pathwayVotes)
+    .where(
+      and(
+        eq(pathwayVotes.pathwayId, params.pathwayId),
+        hasAgent
+          ? eq(pathwayVotes.voterAgentId, params.voterAgentId!)
+          : eq(pathwayVotes.voterUserId, params.voterUserId!),
+      ),
+    )
+    .limit(1);
+  if (existing.length > 0) {
+    // Pathway is still 'voting' at this point (we early-returned PATHWAY_NOT_VOTING
+    // for any other status), so the previous-vote idempotent path can't have caused
+    // acceptance from this call.
+    return {
+      pathway_id: params.pathwayId,
+      vote: existing[0].vote as "yes" | "no",
+      already_voted: true,
+      now_accepted: false,
+    };
+  }
+
+  // Write vote + update counters + check acceptance threshold
+  let nowAccepted = false;
+  await db.transaction(async (tx) => {
+    await tx.insert(pathwayVotes).values({
+      pathwayId: params.pathwayId,
+      voterType: hasAgent ? "agent" : "human",
+      voterAgentId: params.voterAgentId ?? null,
+      voterUserId: params.voterUserId ?? null,
+      vote: params.vote,
+    });
+
+    if (params.vote === "yes") {
+      await tx
+        .update(pathways)
+        .set({ voteCountYes: sql`${pathways.voteCountYes} + 1`, updatedAt: new Date() })
+        .where(eq(pathways.id, params.pathwayId));
+    } else {
+      await tx
+        .update(pathways)
+        .set({ voteCountNo: sql`${pathways.voteCountNo} + 1`, updatedAt: new Date() })
+        .where(eq(pathways.id, params.pathwayId));
+    }
+
+    const newYes = pathway.voteCountYes + (params.vote === "yes" ? 1 : 0);
+    const newNo = pathway.voteCountNo + (params.vote === "no" ? 1 : 0);
+    if (newYes >= PATHWAY_ACCEPT_YES_THRESHOLD && newYes > newNo) {
+      await tx
+        .update(pathways)
+        .set({ status: "accepted", updatedAt: new Date() })
+        .where(eq(pathways.id, params.pathwayId));
+      nowAccepted = true;
+    }
+  });
+
+  return {
+    pathway_id: params.pathwayId,
+    vote: params.vote,
+    already_voted: false,
+    now_accepted: nowAccepted,
+  };
+}
+
+// =============================================================================
+// Read
+// =============================================================================
+
+export type ListedPathwayProposal = {
+  proposalId: string;
+  displayOrder: number;
+  summary: string;
+  proposalStatus: string;
+};
+
+export type ListedPathway = {
+  id: string;
+  label: string;
+  description: string;
+  recommendedForContext: string | null;
+  status: PathwayStatus;
+  voteCountYes: number;
+  voteCountNo: number;
+  proposals: ListedPathwayProposal[];
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+};
+
+export async function listPathways(params: {
+  problemId: string;
+  status?: PathwayStatus;
+}): Promise<{ pathways: ListedPathway[] } | { error: ManageError }> {
+  if (!isUuid(params.problemId)) return { error: "INVALID_INPUT" };
+  const db = getDb();
+  if (!db) return { error: "DATABASE_UNAVAILABLE" };
+
+  const rows = await db
+    .select({
+      id: pathways.id,
+      label: pathways.label,
+      description: pathways.description,
+      recommendedForContext: pathways.recommendedForContext,
+      status: pathways.status,
+      voteCountYes: pathways.voteCountYes,
+      voteCountNo: pathways.voteCountNo,
+      createdByAgentId: pathways.createdByAgentId,
+      createdByUserId: pathways.createdByUserId,
+      createdAt: pathways.createdAt,
+    })
+    .from(pathways)
+    .where(
+      and(
+        eq(pathways.problemId, params.problemId),
+        params.status ? eq(pathways.status, params.status) : undefined,
+      ),
+    )
+    .orderBy(asc(pathways.createdAt));
+
+  if (rows.length === 0) return { pathways: [] };
+
+  // Fetch proposals for all returned pathways in one query
+  const pathwayIds = rows.map((r) => r.id);
+  const proposalRows = await db
+    .select({
+      pathwayId: pathwayProposals.pathwayId,
+      proposalId: pathwayProposals.proposalId,
+      displayOrder: pathwayProposals.displayOrder,
+      summary: proposals.summary,
+      proposalStatus: proposals.status,
+    })
+    .from(pathwayProposals)
+    .innerJoin(proposals, eq(pathwayProposals.proposalId, proposals.id))
+    .where(inArray(pathwayProposals.pathwayId, pathwayIds))
+    .orderBy(asc(pathwayProposals.displayOrder));
+
+  const byPathway = new Map<string, ListedPathwayProposal[]>();
+  for (const p of proposalRows) {
+    const arr = byPathway.get(p.pathwayId) ?? [];
+    arr.push({
+      proposalId: p.proposalId,
+      displayOrder: p.displayOrder,
+      summary: p.summary,
+      proposalStatus: p.proposalStatus,
+    });
+    byPathway.set(p.pathwayId, arr);
+  }
+
+  return {
+    pathways: rows.map((r) => ({
+      ...r,
+      status: r.status as PathwayStatus,
+      proposals: byPathway.get(r.id) ?? [],
+    })),
+  };
+}
