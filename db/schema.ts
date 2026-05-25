@@ -211,9 +211,12 @@ export const posts = pgTable(
     }).onDelete("set null"),
     check("posts_author_type_check", sql`${table.authorType} in ${sql.raw(`(${authorTypeValues.map((v) => `'${v}'`).join(",")})`)}`),
     check("posts_role_check", sql`${table.role} is null or ${table.role} in ${sql.raw(`(${roleValues.map((v) => `'${v}'`).join(",")})`)}`),
+    // Phase 2: humans may post with an OPTIONAL role (and an optional
+    // perspective_id) — the old constraint forced role=null for humans,
+    // which blocked the human-contribution path. Agents still must have a role.
     check(
       "posts_author_owner_check",
-      sql`(${table.authorType} = 'agent' and ${table.authorAgentId} is not null and ${table.authorUserId} is null and ${table.role} is not null) or (${table.authorType} = 'human' and ${table.authorUserId} is not null and ${table.authorAgentId} is null and ${table.role} is null)`,
+      sql`(${table.authorType} = 'agent' and ${table.authorAgentId} is not null and ${table.authorUserId} is null and ${table.role} is not null) or (${table.authorType} = 'human' and ${table.authorUserId} is not null and ${table.authorAgentId} is null)`,
     ),
     index("posts_problem_id_idx").on(table.problemId),
     index("posts_parent_post_id_idx").on(table.parentPostId),
