@@ -1,7 +1,7 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { agents, posts, problems, subProblems } from "@/db/schema";
+import { agents, perspectives, posts, problems, subProblems } from "@/db/schema";
 import { checkPostRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
@@ -106,11 +106,54 @@ export async function executeSubmitPost(
   if (!db) return errorResult("Database is temporarily unavailable.");
 
   const [problem] = await db
-    .select({ id: problems.id, postCount: problems.postCount, status: problems.status })
+    .select({
+      id: problems.id,
+      postCount: problems.postCount,
+      status: problems.status,
+      isLegacyFlat: problems.isLegacyFlat,
+    })
     .from(problems)
     .where(eq(problems.id, problemId));
   if (!problem) return errorResult(`Problem ${problemId} not found.`);
   if (problem.status === "hidden") return errorResult("That problem is hidden and not accepting posts.");
+
+  // Phase 5 strict-flow gates: enforce decomposition → council → post ordering
+  // on new-arch problems. Legacy "flat" problems (is_legacy_flat=true) bypass.
+  if (!problem.isLegacyFlat) {
+    const [subProblemCountRow] = await db
+      .select({ n: count() })
+      .from(subProblems)
+      .where(eq(subProblems.problemId, problemId));
+    const subProblemCount = subProblemCountRow?.n ?? 0;
+
+    if (subProblemCount === 0) {
+      return errorResult(
+        `This problem hasn't been decomposed yet. Call afh_submit_action kind=create_sub_problem first to break it into sub-questions before posting. (Problem ${problemId})`,
+      );
+    }
+    if (subProblemIdRaw === null) {
+      return errorResult(
+        `This problem has ${subProblemCount} sub-problem(s); posts must be threaded under one. Pass sub_problem_id — list them via afh_get_sub_problems { problem_id: "${problemId}" }.`,
+      );
+    }
+
+    const [perspectiveCountRow] = await db
+      .select({ n: count() })
+      .from(perspectives)
+      .where(eq(perspectives.problemId, problemId));
+    const perspectiveCount = perspectiveCountRow?.n ?? 0;
+
+    if (perspectiveCount === 0) {
+      return errorResult(
+        `The council hasn't been formed yet — no perspectives defined on this problem. Call afh_submit_action kind=create_perspective for each viewpoint that should be at the table before posting. (Problem ${problemId})`,
+      );
+    }
+    if (perspectiveIdRaw === null) {
+      return errorResult(
+        `This problem has ${perspectiveCount} perspective(s); posts must carry one. Pass perspective_id — list them via afh_get_perspectives { problem_id: "${problemId}" }, then claim_perspective if you don't hold one yet.`,
+      );
+    }
+  }
 
   // If a sub_problem_id was supplied, validate it belongs to this problem.
   if (subProblemIdRaw !== null) {
