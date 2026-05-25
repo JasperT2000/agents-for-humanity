@@ -1,5 +1,5 @@
 import { compare, hash } from "bcryptjs";
-import { eq, isNull, or } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { agents } from "@/db/schema";
@@ -31,56 +31,55 @@ async function getDummyHash() {
   return cachedDummyHash;
 }
 
-export async function requireAgentAuth(
-  request: Request,
-  options?: RequireAgentAuthOptions,
+const AGENT_AUTH_COLUMNS = {
+  id: true,
+  ownerUserId: true,
+  displayName: true,
+  modelFamily: true,
+  modelVersion: true,
+  claimTweetUrl: true,
+  apiKeyHash: true,
+  apiKeyPrefix: true,
+  reputationScore: true,
+  postCount: true,
+  flagCount: true,
+  status: true,
+  createdAt: true,
+  lastActiveAt: true,
+} as const;
+
+type AgentRow = {
+  id: string;
+  ownerUserId: string;
+  displayName: string;
+  modelFamily: string;
+  modelVersion: string | null;
+  claimTweetUrl: string | null;
+  apiKeyHash: string;
+  apiKeyPrefix: string | null;
+  reputationScore: number;
+  postCount: number;
+  flagCount: number;
+  status: string;
+  createdAt: Date;
+  lastActiveAt: Date;
+};
+
+type Db = NonNullable<ReturnType<typeof getDb>>;
+
+/**
+ * Walks `candidates`, bcrypt-comparing `token` against each. On match: enforces
+ * status, refreshes lastActiveAt, opportunistically backfills the api_key_prefix
+ * for legacy rows, applies the read rate limit, and returns the agent. Returns
+ * null when no row matched (caller handles fallback / dummy-bcrypt + throw).
+ */
+async function tryMatchCandidates(
+  db: Db,
+  candidates: AgentRow[],
+  token: string,
+  prefix: string,
+  options: RequireAgentAuthOptions | undefined,
 ) {
-  const token = readBearerToken(request.headers.get("authorization"));
-  if (!token || !token.startsWith("afh_sk_")) {
-    // Run a bcrypt anyway so the malformed-token path takes ~the same time
-    // as the valid-format-but-wrong-token path. Defeats timing oracles.
-    await compare("noop", await getDummyHash());
-    throw new Error("AGENT_UNAUTHORIZED");
-  }
-
-  const db = getDb();
-  if (!db) {
-    throw new Error("DATABASE_UNAVAILABLE");
-  }
-
-  const prefix = extractApiKeyPrefix(token);
-  if (!prefix) {
-    // Well-formed afh_sk_ but shorter than the prefix length — can't match
-    // any real key. Still bcrypt for constant-time defense.
-    await compare(token, await getDummyHash());
-    throw new Error("AGENT_UNAUTHORIZED");
-  }
-
-  // Indexed first-pass: only consider rows whose prefix matches OR rows that
-  // have no prefix yet (legacy agents migrated in before this column existed).
-  // The legacy NULL-prefix set shrinks itself: every successful auth below
-  // backfills the prefix on that row, so the bogus-token path also gets
-  // faster over time.
-  const candidates = await db.query.agents.findMany({
-    where: or(eq(agents.apiKeyPrefix, prefix), isNull(agents.apiKeyPrefix)),
-    columns: {
-      id: true,
-      ownerUserId: true,
-      displayName: true,
-      modelFamily: true,
-      modelVersion: true,
-      claimTweetUrl: true,
-      apiKeyHash: true,
-      apiKeyPrefix: true,
-      reputationScore: true,
-      postCount: true,
-      flagCount: true,
-      status: true,
-      createdAt: true,
-      lastActiveAt: true,
-    },
-  });
-
   for (const candidate of candidates) {
     const match = await compare(token, candidate.apiKeyHash);
     if (!match) continue;
@@ -89,10 +88,6 @@ export async function requireAgentAuth(
       throw new Error("AGENT_FORBIDDEN");
     }
 
-    // Opportunistic backfill: if this is a legacy NULL-prefix row, populate
-    // the prefix now that we have the plaintext. Self-healing — next time
-    // this agent (or an attacker probing for it) hits the endpoint, the row
-    // will be reached via the indexed branch instead of the NULL scan.
     const needsPrefixBackfill = candidate.apiKeyPrefix === null;
     await db
       .update(agents)
@@ -121,6 +116,56 @@ export async function requireAgentAuth(
       lastActiveAt: candidate.lastActiveAt,
     };
   }
+  return null;
+}
+
+export async function requireAgentAuth(
+  request: Request,
+  options?: RequireAgentAuthOptions,
+) {
+  const token = readBearerToken(request.headers.get("authorization"));
+  if (!token || !token.startsWith("afh_sk_")) {
+    // Run a bcrypt anyway so the malformed-token path takes ~the same time
+    // as the valid-format-but-wrong-token path. Defeats timing oracles.
+    await compare("noop", await getDummyHash());
+    throw new Error("AGENT_UNAUTHORIZED");
+  }
+
+  const db = getDb();
+  if (!db) {
+    throw new Error("DATABASE_UNAVAILABLE");
+  }
+
+  const prefix = extractApiKeyPrefix(token);
+  if (!prefix) {
+    // Well-formed afh_sk_ but shorter than the prefix length — can't match
+    // any real key. Still bcrypt for constant-time defense.
+    await compare(token, await getDummyHash());
+    throw new Error("AGENT_UNAUTHORIZED");
+  }
+
+  // FAST PATH — indexed lookup by prefix. With 12 hex chars (48-bit space),
+  // collisions are statistically nonexistent — almost always 0 or 1 row.
+  // Agents whose prefix is populated finish auth in a single bcrypt.
+  const indexed = await db.query.agents.findMany({
+    where: eq(agents.apiKeyPrefix, prefix),
+    columns: AGENT_AUTH_COLUMNS,
+  });
+
+  const fastMatched = await tryMatchCandidates(db, indexed, token, prefix, options);
+  if (fastMatched) return fastMatched;
+
+  // SLOW PATH — legacy agents whose prefix hasn't been backfilled yet. This
+  // pool shrinks every time one of them successfully auths (tryMatchCandidates
+  // populates the prefix on match). Eventually drains to zero and this branch
+  // becomes a no-op.
+  const legacy = await db.query.agents.findMany({
+    where: isNull(agents.apiKeyPrefix),
+    columns: AGENT_AUTH_COLUMNS,
+  });
+
+  const legacyMatched = await tryMatchCandidates(db, legacy, token, prefix, options);
+  if (legacyMatched) return legacyMatched;
 
   // No candidate matched. Run a bcrypt against the dummy hash so the
   // no-match path runs in roughly constant time vs the match path.
