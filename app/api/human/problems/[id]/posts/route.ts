@@ -1,13 +1,34 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { NextRequest } from "next/server";
+
 import { getDb } from "@/db";
-import { posts, problems } from "@/db/schema";
+import { posts, problems, subProblems } from "@/db/schema";
 import { requireHumanAuth } from "@/lib/human-auth";
+import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const VALID_ROLES = new Set([
+  "proposer",
+  "critic",
+  "citer",
+  "synthesiser",
+  "steelmanner",
+  "boundary_setter",
+  "dissenter",
+]);
+
 type Params = { params: Promise<{ id: string }> };
 
+/**
+ * POST /api/human/problems/[id]/posts
+ *
+ * Humans contribute to a problem. The minimum shape is { body } — freeform
+ * testimony like the brief's caseworker case. Phase 2 adds optional
+ * structured fields and attribution: role, perspective_id, sub_problem_id,
+ * parent_post_id, prior_work_refs. Backward-compatible: existing
+ * { body }-only callers keep working.
+ */
 export async function POST(req: NextRequest, { params }: Params) {
   let user: { id: string; displayName: string };
   try {
@@ -37,12 +58,55 @@ export async function POST(req: NextRequest, { params }: Params) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { body: postBody } = body;
+  // Field unpacking
+  const bodyText = typeof body.body === "string" ? body.body.trim() : "";
+  const coreClaim = typeof body.core_claim === "string" ? body.core_claim.trim() : "";
+  const reasoning = typeof body.reasoning === "string" ? body.reasoning.trim() || null : null;
+  const assumptions = typeof body.assumptions === "string" ? body.assumptions.trim() || null : null;
+  const uncertainty = typeof body.uncertainty === "string" ? body.uncertainty.trim() || null : null;
+  const livedExp = typeof body.lived_experience_ack === "string" ? body.lived_experience_ack.trim() || null : null;
+  const roleRaw = typeof body.role === "string" ? body.role : null;
+  const subProblemIdRaw = typeof body.sub_problem_id === "string" ? body.sub_problem_id : null;
+  const perspectiveIdRaw = typeof body.perspective_id === "string" ? body.perspective_id : null;
+  const parentIdRaw = typeof body.parent_post_id === "string" ? body.parent_post_id : null;
 
-  if (typeof postBody !== "string" || postBody.trim().length === 0)
-    return Response.json({ error: "body is required" }, { status: 422 });
-  if (postBody.trim().length > 2000)
-    return Response.json({ error: "body must be ≤2000 characters" }, { status: 422 });
+  const refs: string[] = [];
+  if (Array.isArray(body.prior_work_refs)) {
+    for (const r of body.prior_work_refs) {
+      if (typeof r !== "string" || !UUID_RE.test(r)) {
+        return Response.json({ error: "Each prior_work_ref must be a valid UUID" }, { status: 422 });
+      }
+      refs.push(r);
+    }
+  } else if (body.prior_work_refs != null) {
+    return Response.json({ error: "prior_work_refs must be an array of UUIDs" }, { status: 422 });
+  }
+
+  // Validation
+  if (!bodyText && !coreClaim) {
+    return Response.json({ error: "Either body (freeform) or core_claim is required" }, { status: 422 });
+  }
+  if (coreClaim && coreClaim.length > 280) {
+    return Response.json({ error: "core_claim must be ≤280 characters" }, { status: 422 });
+  }
+  if (bodyText && bodyText.length > 8000) {
+    return Response.json({ error: "body must be ≤8000 characters" }, { status: 422 });
+  }
+  if (roleRaw !== null && !VALID_ROLES.has(roleRaw)) {
+    return Response.json(
+      { error: `role must be one of: ${[...VALID_ROLES].join(", ")}, or omitted` },
+      { status: 422 },
+    );
+  }
+  if (subProblemIdRaw !== null && !UUID_RE.test(subProblemIdRaw)) {
+    return Response.json({ error: "sub_problem_id must be a valid UUID or omitted" }, { status: 422 });
+  }
+  if (perspectiveIdRaw !== null && !UUID_RE.test(perspectiveIdRaw)) {
+    return Response.json({ error: "perspective_id must be a valid UUID or omitted" }, { status: 422 });
+  }
+  if (parentIdRaw !== null && !UUID_RE.test(parentIdRaw)) {
+    return Response.json({ error: "parent_post_id must be a valid UUID or omitted" }, { status: 422 });
+  }
 
   try {
     const [problem] = await db
@@ -54,14 +118,59 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (problem.status === "hidden")
       return Response.json({ error: "Problem is hidden" }, { status: 403 });
 
+    // Validate sub_problem_id belongs to this problem
+    if (subProblemIdRaw !== null) {
+      const sp = await db.query.subProblems.findFirst({
+        where: and(eq(subProblems.id, subProblemIdRaw), eq(subProblems.problemId, problemId)),
+        columns: { id: true },
+      });
+      if (!sp) {
+        return Response.json(
+          { error: "sub_problem_id does not belong to this problem" },
+          { status: 422 },
+        );
+      }
+    }
+
+    // Validate perspective_id belongs to this problem AND is owned by this user
+    if (perspectiveIdRaw !== null) {
+      const pres = await resolveOwnedPerspective({
+        perspectiveId: perspectiveIdRaw,
+        problemId,
+        ownerUserId: user.id,
+      });
+      if ("error" in pres) {
+        const code = pres.error === "PERSPECTIVE_NOT_FOUND" ? 404 : 403;
+        return Response.json(
+          {
+            error:
+              pres.error === "PERSPECTIVE_NOT_FOUND"
+                ? "perspective_id not found"
+                : "perspective_id does not belong to this problem, or you don't hold it",
+          },
+          { status: code },
+        );
+      }
+    }
+
     const result = await db.transaction(async (tx) => {
       const [post] = await tx
         .insert(posts)
         .values({
           problemId,
+          parentPostId: parentIdRaw,
+          subProblemId: subProblemIdRaw,
+          perspectiveId: perspectiveIdRaw,
           authorType: "human",
           authorUserId: user.id,
-          body: postBody.trim(),
+          role: roleRaw,
+          coreClaim: coreClaim || null,
+          reasoning,
+          assumptions,
+          uncertainty,
+          livedExperienceAck: livedExp,
+          priorWorkRefs: refs,
+          body: bodyText || coreClaim || null,
         })
         .returning();
       if (!post) throw new Error("Post insert returned no rows");
@@ -78,8 +187,23 @@ export async function POST(req: NextRequest, { params }: Params) {
       return post;
     });
 
+    if (perspectiveIdRaw !== null) {
+      await markPerspectiveFilled(perspectiveIdRaw);
+    }
+
     return Response.json(
-      { ok: true, post: { id: result.id, problemId: result.problemId, body: result.body, createdAt: result.createdAt } },
+      {
+        ok: true,
+        post: {
+          id: result.id,
+          problemId: result.problemId,
+          subProblemId: result.subProblemId,
+          perspectiveId: result.perspectiveId,
+          role: result.role,
+          body: result.body,
+          createdAt: result.createdAt,
+        },
+      },
       { status: 201 },
     );
   } catch (err) {
