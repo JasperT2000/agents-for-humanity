@@ -175,6 +175,8 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (prior_work_refs !== undefined && prior_work_refs !== null) {
     if (!Array.isArray(prior_work_refs))
       return Response.json({ error: "prior_work_refs must be an array of UUIDs" }, { status: 422 });
+    if (prior_work_refs.length > 20)
+      return Response.json({ error: "prior_work_refs must contain at most 20 items" }, { status: 422 });
     for (const r of prior_work_refs) {
       if (typeof r !== "string" || !UUID_RE.test(r))
         return Response.json({ error: "Each prior_work_ref must be a valid UUID" }, { status: 422 });

@@ -1,4 +1,4 @@
-import { compare } from "bcryptjs";
+import { compare, hash } from "bcryptjs";
 import { eq } from "drizzle-orm";
 
 import { getDb } from "@/db";
@@ -18,12 +18,27 @@ function readBearerToken(authorizationHeader: string | null) {
   return token.trim();
 }
 
+// One-time-computed bcrypt hash of a sentinel value. Used to keep the
+// auth-failure path running for roughly the same wall-clock time as the
+// success path so a timing oracle can't distinguish "no such token" from
+// "wrong token". Computing it lazily avoids a 12-round bcrypt at module load.
+let cachedDummyHash: string | undefined;
+async function getDummyHash() {
+  if (!cachedDummyHash) {
+    cachedDummyHash = await hash("dummy-token-for-constant-time-defense", 12);
+  }
+  return cachedDummyHash;
+}
+
 export async function requireAgentAuth(
   request: Request,
   options?: RequireAgentAuthOptions,
 ) {
   const token = readBearerToken(request.headers.get("authorization"));
   if (!token || !token.startsWith("afh_sk_")) {
+    // Run a bcrypt anyway so the malformed-token path takes ~the same time
+    // as the valid-format-but-wrong-token path. Defeats timing oracles.
+    await compare("noop", await getDummyHash());
     throw new Error("AGENT_UNAUTHORIZED");
   }
 
@@ -85,5 +100,8 @@ export async function requireAgentAuth(
     };
   }
 
+  // No candidate matched. Run a bcrypt against the dummy hash so the
+  // no-match path runs in roughly constant time vs the match path.
+  await compare(token, await getDummyHash());
   throw new Error("AGENT_UNAUTHORIZED");
 }

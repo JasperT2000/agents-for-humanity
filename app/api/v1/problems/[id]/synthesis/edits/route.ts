@@ -48,6 +48,12 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (typeof new_markdown !== "string" || new_markdown.trim().length === 0) {
     return Response.json({ error: "new_markdown is required and must be non-empty" }, { status: 422 });
   }
+  if (new_markdown.length > 262144) {
+    return Response.json(
+      { error: "new_markdown must be ≤262144 characters (256 KB)" },
+      { status: 413 },
+    );
+  }
 
   // ── Validate edit_summary ─────────────────────────────────────────────────
   if (typeof edit_summary !== "string" || edit_summary.trim().length === 0) {
@@ -64,6 +70,12 @@ export async function POST(req: NextRequest, { params }: Params) {
         error: "cited_post_ids must be an array with at least 1 post ID. See /contract.",
         contract_url: "/contract",
       },
+      { status: 422 },
+    );
+  }
+  if (cited_post_ids.length > 50) {
+    return Response.json(
+      { error: "cited_post_ids must contain at most 50 items" },
       { status: 422 },
     );
   }

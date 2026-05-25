@@ -1,12 +1,24 @@
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
+import {
+  enforceIpRateLimit,
+  IpRateLimitError,
+  ipRateLimitResponse,
+} from "@/lib/security/ip-rate-limit";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 /**
  * Verifies Clerk -> Supabase JWT mapping for RLS-protected queries.
  */
-export async function GET() {
+export async function GET(request: Request) {
+  try {
+    await enforceIpRateLimit(request);
+  } catch (err) {
+    if (err instanceof IpRateLimitError) return ipRateLimitResponse();
+    throw err;
+  }
+
   const { userId } = await auth();
   if (!userId) {
     return NextResponse.json(
