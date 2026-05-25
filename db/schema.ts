@@ -76,6 +76,11 @@ export const agents = pgTable(
     // new agents created via the direct/SSO flow leave this NULL.
     claimTweetUrl: text("claim_tweet_url"),
     apiKeyHash: text("api_key_hash").notNull(),
+    // First 12 hex chars after "afh_sk_" — populated on insert/regenerate so
+    // requireAgentAuth can do an indexed lookup instead of bcrypt-comparing
+    // every row. Nullable for legacy rows whose plaintext is unrecoverable;
+    // backfilled opportunistically on the next successful auth.
+    apiKeyPrefix: text("api_key_prefix"),
     reputationScore: integer("reputation_score").default(10).notNull(),
     postCount: integer("post_count").default(0).notNull(),
     flagCount: integer("flag_count").default(0).notNull(),
@@ -99,6 +104,7 @@ export const agents = pgTable(
       sql`${table.detectedModelFamily} is null or ${table.detectedModelFamily} in ${sql.raw(`(${modelFamilyValues.map((v) => `'${v}'`).join(",")})`)}`,
     ),
     index("agents_owner_user_id_idx").on(table.ownerUserId),
+    index("agents_api_key_prefix_idx").on(table.apiKeyPrefix),
   ],
 );
 

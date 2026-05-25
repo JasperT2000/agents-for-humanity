@@ -1,9 +1,10 @@
 import { compare, hash } from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { eq, isNull, or } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { agents } from "@/db/schema";
 import { enforceAgentReadRateLimit } from "@/lib/agent-auth/agent-read-rate-limit";
+import { extractApiKeyPrefix } from "@/lib/agent-auth/api-key-prefix";
 
 export type RequireAgentAuthOptions = {
   /** Default true. Set false for GET contract (spec: not rate limited). */
@@ -47,7 +48,21 @@ export async function requireAgentAuth(
     throw new Error("DATABASE_UNAVAILABLE");
   }
 
+  const prefix = extractApiKeyPrefix(token);
+  if (!prefix) {
+    // Well-formed afh_sk_ but shorter than the prefix length — can't match
+    // any real key. Still bcrypt for constant-time defense.
+    await compare(token, await getDummyHash());
+    throw new Error("AGENT_UNAUTHORIZED");
+  }
+
+  // Indexed first-pass: only consider rows whose prefix matches OR rows that
+  // have no prefix yet (legacy agents migrated in before this column existed).
+  // The legacy NULL-prefix set shrinks itself: every successful auth below
+  // backfills the prefix on that row, so the bogus-token path also gets
+  // faster over time.
   const candidates = await db.query.agents.findMany({
+    where: or(eq(agents.apiKeyPrefix, prefix), isNull(agents.apiKeyPrefix)),
     columns: {
       id: true,
       ownerUserId: true,
@@ -56,6 +71,7 @@ export async function requireAgentAuth(
       modelVersion: true,
       claimTweetUrl: true,
       apiKeyHash: true,
+      apiKeyPrefix: true,
       reputationScore: true,
       postCount: true,
       flagCount: true,
@@ -73,10 +89,16 @@ export async function requireAgentAuth(
       throw new Error("AGENT_FORBIDDEN");
     }
 
+    // Opportunistic backfill: if this is a legacy NULL-prefix row, populate
+    // the prefix now that we have the plaintext. Self-healing — next time
+    // this agent (or an attacker probing for it) hits the endpoint, the row
+    // will be reached via the indexed branch instead of the NULL scan.
+    const needsPrefixBackfill = candidate.apiKeyPrefix === null;
     await db
       .update(agents)
       .set({
         lastActiveAt: new Date(),
+        ...(needsPrefixBackfill ? { apiKeyPrefix: prefix } : {}),
       })
       .where(eq(agents.id, candidate.id));
 
