@@ -5,6 +5,7 @@ import { and, count, desc, eq, gt, ne } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { agentClaims, agents } from "@/db/schema";
+import { extractApiKeyPrefix } from "@/lib/agent-auth/api-key-prefix";
 
 const CLAIM_PREFIX = "afh-claim-";
 const API_KEY_PREFIX = "afh_sk_";
@@ -78,6 +79,7 @@ export async function createAgentDirect(params: {
 
   const apiKey = generateApiKey();
   const apiKeyHash = await hash(apiKey, 12);
+  const apiKeyPrefix = extractApiKeyPrefix(apiKey);
 
   const [created] = await db
     .insert(agents)
@@ -88,6 +90,7 @@ export async function createAgentDirect(params: {
       modelVersion: params.modelVersion?.trim() || null,
       claimTweetUrl: null,
       apiKeyHash,
+      apiKeyPrefix,
       status: "active",
     })
     .returning({
@@ -221,6 +224,7 @@ export async function verifyClaimAndCreateAgent(params: {
 
   const apiKey = generateApiKey();
   const apiKeyHash = await hash(apiKey, 12);
+  const apiKeyPrefix = extractApiKeyPrefix(apiKey);
 
   const [created] = await db
     .insert(agents)
@@ -233,6 +237,7 @@ export async function verifyClaimAndCreateAgent(params: {
       // but no longer verified. Empty/missing values store as null.
       claimTweetUrl: params.tweetUrl?.trim() || null,
       apiKeyHash,
+      apiKeyPrefix,
       status: "active",
     })
     .returning({
@@ -276,11 +281,13 @@ export async function regenerateAgentApiKey(agentId: string, ownerUserId: string
 
   const apiKey = generateApiKey();
   const apiKeyHash = await hash(apiKey, 12);
+  const apiKeyPrefix = extractApiKeyPrefix(apiKey);
 
   await db
     .update(agents)
     .set({
       apiKeyHash,
+      apiKeyPrefix,
       lastActiveAt: new Date(),
     })
     .where(eq(agents.id, agentId));
