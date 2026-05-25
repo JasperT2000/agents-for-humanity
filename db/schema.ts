@@ -149,6 +149,8 @@ export const problems = pgTable(
     primaryCauseId: uuid("primary_cause_id")
       .notNull()
       .references(() => causes.id, { onDelete: "restrict" }),
+    /** Phase 4: field context ("Aligarh, UP, India"). Optional. */
+    region: text("region"),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     postedByType: text("posted_by_type").notNull(),
     postedByAgentId: uuid("posted_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
@@ -196,6 +198,9 @@ export const posts = pgTable(
     subProblemId: uuid("sub_problem_id"),
     /** Phase 2: optional — viewpoint identity the author is speaking from. */
     perspectiveId: uuid("perspective_id"),
+    /** Phase 4: chain reopen — synth posts get marked when new evidence lands. */
+    reopenedAt: timestamp("reopened_at", { withTimezone: true }),
+    reopenReason: text("reopen_reason"),
     upvoteCount: integer("upvote_count").default(0).notNull(),
     downvoteCount: integer("downvote_count").default(0).notNull(),
     flagCount: integer("flag_count").default(0).notNull(),
@@ -828,6 +833,49 @@ export const pathwayVotes = pgTable(
     // Partial-unique indexes on (pathway_id, voter_agent_id) WHERE voter_agent_id IS NOT NULL
     // and (pathway_id, voter_user_id) WHERE voter_user_id IS NOT NULL are declared in the SQL
     // migration directly.
+  ],
+);
+
+// =============================================================================
+// Phase 4: activity_events — single append-only stream of writes
+//
+// Every notable mutation (sub_problem.created, finding.created, pathway.accepted,
+// chain.reopened, …) appends a row here. Endpoints / dashboards / the demo's
+// live-feed panel read from this. Cheap to query (indexed by created_at, problem_id,
+// event_type). No SSE yet — frontend polls /api/v1/activity/recent.
+// =============================================================================
+
+const actorTypeValues = ["agent", "human", "system"] as const;
+
+export const activityEvents = pgTable(
+  "activity_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    /** Dotted namespace: "sub_problem.created", "finding.created", "pathway.accepted", "chain.reopened", etc. */
+    eventType: text("event_type").notNull(),
+    actorType: text("actor_type").notNull(),
+    actorAgentId: uuid("actor_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+    problemId: uuid("problem_id").references(() => problems.id, { onDelete: "cascade" }),
+    subProblemId: uuid("sub_problem_id").references(() => subProblems.id, { onDelete: "cascade" }),
+    /** The new entity's id (sub-problem id, finding id, pathway id, etc.). Loose typing on purpose. */
+    targetId: uuid("target_id"),
+    /** One-line human-readable description. Shown in feeds verbatim. */
+    summary: text("summary").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "activity_events_actor_type_check",
+      sql`${table.actorType} in ${sql.raw(`(${actorTypeValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "activity_events_actor_consistency",
+      sql`(${table.actorType} = 'agent' and ${table.actorAgentId} is not null and ${table.actorUserId} is null) or (${table.actorType} = 'human' and ${table.actorUserId} is not null and ${table.actorAgentId} is null) or (${table.actorType} = 'system' and ${table.actorAgentId} is null and ${table.actorUserId} is null)`,
+    ),
+    index("activity_events_created_at_idx").on(table.createdAt),
+    index("activity_events_problem_id_idx").on(table.problemId),
+    index("activity_events_event_type_idx").on(table.eventType),
   ],
 );
 

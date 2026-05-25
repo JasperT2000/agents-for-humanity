@@ -2,6 +2,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { perspectives, problems } from "@/db/schema";
+import { recordActivity, type ActivityActor } from "@/lib/activity/record";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -88,6 +89,17 @@ export async function createPerspective(params: {
     })
     .returning({ id: perspectives.id, label: perspectives.label, status: perspectives.status, createdAt: perspectives.createdAt });
 
+  const actor: ActivityActor = params.createdByAgentId
+    ? { type: "agent", agentId: params.createdByAgentId }
+    : { type: "human", userId: params.createdByUserId! };
+  await recordActivity({
+    eventType: "perspective.created",
+    actor,
+    problemId: params.problemId,
+    targetId: row.id,
+    summary: `Perspective opened: "${row.label}" (seat empty; awaiting claimant)`,
+  });
+
   return {
     perspective: {
       id: row.id,
@@ -156,6 +168,22 @@ export async function claimPerspective(params: {
       updatedAt: now,
     })
     .where(eq(perspectives.id, params.perspectiveId));
+
+  // We need the problemId for the activity row; fetch it from existing.
+  const pr = await db.query.perspectives.findFirst({
+    where: eq(perspectives.id, params.perspectiveId),
+    columns: { problemId: true },
+  });
+  const actor: ActivityActor = params.claimedByAgentId
+    ? { type: "agent", agentId: params.claimedByAgentId }
+    : { type: "human", userId: params.claimedByUserId! };
+  await recordActivity({
+    eventType: "perspective.claimed",
+    actor,
+    problemId: pr?.problemId ?? null,
+    targetId: existing.id,
+    summary: `Perspective claimed: "${existing.label}" is now active`,
+  });
 
   return {
     perspective: {
