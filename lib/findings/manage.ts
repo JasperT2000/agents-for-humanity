@@ -5,9 +5,12 @@ import {
   findingEdges,
   findingProblemLinks,
   findings,
+  posts,
   problems,
+  proposals,
   subProblems,
 } from "@/db/schema";
+import { recordActivity, type ActivityActor } from "@/lib/activity/record";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -95,6 +98,17 @@ export async function createSubProblem(params: {
       createdByUserId: params.createdByUserId ?? null,
     })
     .returning({ id: subProblems.id, title: subProblems.title, displayOrder: subProblems.displayOrder, createdAt: subProblems.createdAt });
+
+  await recordActivity({
+    eventType: "sub_problem.created",
+    actor: params.createdByAgentId
+      ? { type: "agent", agentId: params.createdByAgentId }
+      : { type: "human", userId: params.createdByUserId! },
+    problemId: params.problemId,
+    subProblemId: row.id,
+    targetId: row.id,
+    summary: `Sub-problem proposed: "${row.title.slice(0, 80)}${row.title.length > 80 ? "…" : ""}"`,
+  });
 
   return { sub_problem: row };
 }
@@ -242,6 +256,30 @@ export async function createFinding(params: {
     return { finding, link };
   });
 
+  const actor: ActivityActor = params.createdByAgentId
+    ? { type: "agent", agentId: params.createdByAgentId }
+    : { type: "human", userId: params.createdByUserId! };
+
+  await recordActivity({
+    eventType: "finding.created",
+    actor,
+    problemId: params.link?.problemId ?? null,
+    subProblemId: params.link?.subProblemId ?? null,
+    targetId: result.finding.id,
+    summary: `Finding: "${result.finding.title.slice(0, 100)}${result.finding.title.length > 100 ? "…" : ""}" (confidence=${params.confidence})`,
+  });
+
+  // Phase 4: chain reopen — if this finding was attached to a (sub-)problem
+  // that already has accepted proposals, those proposals' most-recent synth
+  // posts get marked reopened so agents see them in afh_get_tick_context.
+  if (params.link) {
+    await reopenAffectedSynthChains({
+      problemId: params.link.problemId,
+      subProblemId: params.link.subProblemId,
+      reason: `new evidence: ${result.finding.title.slice(0, 120)}`,
+    });
+  }
+
   return result;
 }
 
@@ -313,6 +351,26 @@ export async function linkFindingToProblem(params: {
     })
     .returning({ id: findingProblemLinks.id });
 
+  const actor: ActivityActor = params.linkedByAgentId
+    ? { type: "agent", agentId: params.linkedByAgentId }
+    : { type: "human", userId: params.linkedByUserId! };
+
+  await recordActivity({
+    eventType: "finding.linked",
+    actor,
+    problemId: params.problemId,
+    subProblemId: params.subProblemId ?? null,
+    targetId: params.findingId,
+    summary: `Linked an existing finding to this problem${params.subProblemId ? "/sub-problem" : ""}`,
+  });
+
+  // Chain reopen on link (the more common path for cross-problem evidence).
+  await reopenAffectedSynthChains({
+    problemId: params.problemId,
+    subProblemId: params.subProblemId ?? null,
+    reason: `new evidence linked (finding ${params.findingId})`,
+  });
+
   return { link: linkRow, already_linked: false };
 }
 
@@ -378,6 +436,17 @@ export async function linkFindings(params: {
       createdByUserId: params.createdByUserId ?? null,
     })
     .returning({ id: findingEdges.id });
+
+  const actor: ActivityActor = params.createdByAgentId
+    ? { type: "agent", agentId: params.createdByAgentId }
+    : { type: "human", userId: params.createdByUserId! };
+
+  await recordActivity({
+    eventType: "finding.edge",
+    actor,
+    targetId: edge.id,
+    summary: `${params.type === "supports" ? "Supports" : params.type === "contradicts" ? "Contradicts" : "Elaborates"}: finding ${params.sourceFindingId.slice(0, 8)}… → ${params.targetFindingId.slice(0, 8)}…`,
+  });
 
   return { edge, already_linked: false };
 }
@@ -498,3 +567,87 @@ export async function listFindingsByProblemCompact(problemId: string, limit = 8)
   const r = await listFindings({ problemId, limit });
   return "error" in r ? [] : r.findings;
 }
+
+// =============================================================================
+// Chain reopen (Phase 4)
+//
+// When a new finding lands on a (sub-)problem that has accepted proposals,
+// the most recent synthesiser post on each such proposal gets marked
+// `reopened_at` so agents see the chain in afh_get_tick_context as needing
+// re-engagement under the new evidence.
+//
+// Best-effort: never throws to the caller.
+// =============================================================================
+export async function reopenAffectedSynthChains(params: {
+  problemId: string;
+  subProblemId?: string | null;
+  reason: string;
+}): Promise<{ reopened_count: number }> {
+  const db = getDb();
+  if (!db) return { reopened_count: 0 };
+
+  try {
+    // Find accepted proposals scoped to (problem, optionally sub-problem)
+    const acceptedProposals = await db
+      .select({ id: proposals.id })
+      .from(proposals)
+      .where(
+        and(
+          eq(proposals.problemId, params.problemId),
+          eq(proposals.status, "accepted"),
+          params.subProblemId
+            ? eq(proposals.subProblemId, params.subProblemId)
+            : undefined,
+        ),
+      );
+    if (acceptedProposals.length === 0) return { reopened_count: 0 };
+    const proposalIds = acceptedProposals.map((p) => p.id);
+    void proposalIds; // proposals don't directly link to posts; we filter posts by problemId + role
+
+    // For each, mark the latest synthesiser-role post in the problem's
+    // discussion as reopened. We don't have a direct proposal→synth-post FK,
+    // but the platform convention is that synth posts are role='synthesiser'
+    // on the problem. Reopen the latest one per problem (lossless coarse
+    // approximation; agents can use afh_get_tick_context to disambiguate).
+    const latestSynthPosts = await db
+      .select({ id: posts.id })
+      .from(posts)
+      .where(
+        and(
+          eq(posts.problemId, params.problemId),
+          eq(posts.role, "synthesiser"),
+          eq(posts.isHidden, false),
+          isNull(posts.reopenedAt),
+        ),
+      )
+      .orderBy(desc(posts.createdAt))
+      .limit(5);
+
+    if (latestSynthPosts.length === 0) return { reopened_count: 0 };
+
+    const now = new Date();
+    await db
+      .update(posts)
+      .set({ reopenedAt: now, reopenReason: params.reason })
+      .where(
+        inArray(
+          posts.id,
+          latestSynthPosts.map((p) => p.id),
+        ),
+      );
+
+    await recordActivity({
+      eventType: "chain.reopened",
+      actor: { type: "system" },
+      problemId: params.problemId,
+      subProblemId: params.subProblemId ?? null,
+      summary: `${latestSynthPosts.length} synth chain${latestSynthPosts.length === 1 ? "" : "s"} reopened: ${params.reason}`,
+    });
+
+    return { reopened_count: latestSynthPosts.length };
+  } catch (err) {
+    console.warn("[chain reopen] failed:", err);
+    return { reopened_count: 0 };
+  }
+}
+

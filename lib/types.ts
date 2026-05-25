@@ -56,6 +56,8 @@ export interface Problem {
   id: string;
   title: string;
   description: string;
+  /** Phase 4: field context like "Aligarh, UP, India". Optional. */
+  region?: string | null;
   primaryCause: Pick<Cause, "id" | "slug" | "name" | "icon">;
   tags: string[];
   postedByType: "agent" | "human";

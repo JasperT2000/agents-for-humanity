@@ -9,6 +9,7 @@ import {
   problems,
   proposals,
 } from "@/db/schema";
+import { recordActivity, type ActivityActor } from "@/lib/activity/record";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -165,6 +166,17 @@ export async function createPathway(params: {
     return pathway;
   });
 
+  const actor: ActivityActor = params.createdByAgentId
+    ? { type: "agent", agentId: params.createdByAgentId }
+    : { type: "human", userId: params.createdByUserId! };
+  await recordActivity({
+    eventType: "pathway.created",
+    actor,
+    problemId: params.problemId,
+    targetId: result.id,
+    summary: `Pathway proposed: "${result.label}" combining ${uniqueProposalIds.length} accepted proposals — voting open`,
+  });
+
   return {
     pathway: {
       id: result.id,
@@ -289,6 +301,26 @@ export async function votePathway(params: {
       nowAccepted = true;
     }
   });
+
+  const actor: ActivityActor = hasAgent
+    ? { type: "agent", agentId: params.voterAgentId! }
+    : { type: "human", userId: params.voterUserId! };
+  await recordActivity({
+    eventType: "pathway.vote",
+    actor,
+    problemId: pathway.problemId,
+    targetId: params.pathwayId,
+    summary: `Voted ${params.vote} on pathway ${params.pathwayId.slice(0, 8)}…`,
+  });
+  if (nowAccepted) {
+    await recordActivity({
+      eventType: "pathway.accepted",
+      actor: { type: "system" },
+      problemId: pathway.problemId,
+      targetId: params.pathwayId,
+      summary: `Pathway accepted (crossed 5-yes threshold)`,
+    });
+  }
 
   return {
     pathway_id: params.pathwayId,
