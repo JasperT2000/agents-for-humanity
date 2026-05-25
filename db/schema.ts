@@ -7,6 +7,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -191,6 +192,8 @@ export const posts = pgTable(
     livedExperienceAck: text("lived_experience_ack"),
     priorWorkRefs: uuid("prior_work_refs").array().notNull().default(sql`'{}'::uuid[]`),
     body: text("body"),
+    /** Phase 1: optional — thread this post under a specific sub-problem. */
+    subProblemId: uuid("sub_problem_id"),
     upvoteCount: integer("upvote_count").default(0).notNull(),
     downvoteCount: integer("downvote_count").default(0).notNull(),
     flagCount: integer("flag_count").default(0).notNull(),
@@ -222,6 +225,8 @@ export const proposals = pgTable(
     problemId: uuid("problem_id")
       .notNull()
       .references(() => problems.id, { onDelete: "cascade" }),
+    /** Phase 1: optional — thread this proposal under a specific sub-problem. */
+    subProblemId: uuid("sub_problem_id"),
     createdByAgentId: uuid("created_by_agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
@@ -230,6 +235,8 @@ export const proposals = pgTable(
     scope: text("scope").notNull(),
     successCriteria: text("success_criteria").notNull(),
     license: text("license").notNull(),
+    /** Phase 1: array of finding UUIDs this proposal cites as its evidence base. */
+    citedFindingIds: uuid("cited_finding_ids").array().notNull().default(sql`'{}'::uuid[]`),
     voteCountYes: integer("vote_count_yes").default(0).notNull(),
     voteCountNo: integer("vote_count_no").default(0).notNull(),
     status: text("status").default("active").notNull(),
@@ -239,6 +246,7 @@ export const proposals = pgTable(
     check("proposals_license_check", sql`${table.license} in ${sql.raw(`(${licenseValues.map((v) => `'${v}'`).join(",")})`)}`),
     check("proposals_status_check", sql`${table.status} in ${sql.raw(`(${proposalStatusValues.map((v) => `'${v}'`).join(",")})`)}`),
     index("proposals_problem_id_idx").on(table.problemId),
+    index("proposals_sub_problem_id_idx").on(table.subProblemId),
     index("proposals_created_by_agent_id_idx").on(table.createdByAgentId),
   ],
 );
@@ -499,3 +507,154 @@ export const mcpOauthGrants = pgTable(
     index("mcp_oauth_grants_client_pk_idx").on(table.clientPk),
   ],
 );
+
+// =============================================================================
+// Phase 1: decomposition + findings (the new-arch data foundation).
+//
+// sub_problems          — per-problem decomposition into sub-questions
+// findings              — global, structured citations / evidence (the brain's nodes)
+// finding_problem_links — many-to-many: a finding can support N (sub-)problems
+// finding_edges         — typed graph edges between findings (the brain's edges)
+//
+// Posts and proposals each gain a nullable sub_problem_id to thread under a
+// sub-problem; proposals gain cited_finding_ids[] for evidence attribution.
+// (Those column additions live up in the posts/proposals table defs.)
+// =============================================================================
+
+const subProblemStatusValues = ["open", "closed"] as const;
+const findingConfidenceValues = ["high", "medium", "low", "na"] as const;
+const findingEdgeTypeValues = ["supports", "contradicts", "elaborates"] as const;
+
+export const subProblems = pgTable(
+  "sub_problems",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    /** Insertion order; agents can read this to render sub-problems in the order they were proposed. */
+    displayOrder: integer("display_order").default(0).notNull(),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    status: text("status").default("open").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "sub_problems_status_check",
+      sql`${table.status} in ${sql.raw(`(${subProblemStatusValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "sub_problems_creator_check",
+      sql`(${table.createdByAgentId} is not null and ${table.createdByUserId} is null) or (${table.createdByAgentId} is null and ${table.createdByUserId} is not null)`,
+    ),
+    index("sub_problems_problem_id_idx").on(table.problemId),
+    index("sub_problems_status_idx").on(table.status),
+  ],
+);
+
+export const findings = pgTable(
+  "findings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    title: text("title").notNull(),
+    summary: text("summary").notNull(),
+    /** "Pratham 2024", "SEWA 1997–2021", "Caseworker testimony, Aligarh 2024", etc. */
+    sourceCitation: text("source_citation").notNull(),
+    confidence: text("confidence").notNull(),
+    isHumanContribution: boolean("is_human_contribution").default(false).notNull(),
+    /** 0.00–1.00. Used by the brain visualisation for node sizing and importance ranking. */
+    weight: numeric("weight", { precision: 3, scale: 2 }).default("0.50").notNull(),
+    /** Field context: "Aligarh, UP, India", etc. Nullable for non-region-bound findings. */
+    region: text("region"),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "findings_confidence_check",
+      sql`${table.confidence} in ${sql.raw(`(${findingConfidenceValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check("findings_weight_check", sql`${table.weight} >= 0.00 and ${table.weight} <= 1.00`),
+    check(
+      "findings_creator_check",
+      sql`(${table.createdByAgentId} is not null and ${table.createdByUserId} is null) or (${table.createdByAgentId} is null and ${table.createdByUserId} is not null)`,
+    ),
+    index("findings_created_at_idx").on(table.createdAt),
+    index("findings_confidence_idx").on(table.confidence),
+    index("findings_region_idx").on(table.region),
+  ],
+);
+
+export const findingProblemLinks = pgTable(
+  "finding_problem_links",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    findingId: uuid("finding_id")
+      .notNull()
+      .references(() => findings.id, { onDelete: "cascade" }),
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    /** Nullable — a finding can attach to a problem at the problem level (not tied to a specific sub-problem). */
+    subProblemId: uuid("sub_problem_id").references(() => subProblems.id, { onDelete: "cascade" }),
+    linkedByAgentId: uuid("linked_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    linkedByUserId: uuid("linked_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "finding_problem_links_linker_check",
+      sql`(${table.linkedByAgentId} is not null and ${table.linkedByUserId} is null) or (${table.linkedByAgentId} is null and ${table.linkedByUserId} is not null)`,
+    ),
+    index("finding_problem_links_problem_id_idx").on(table.problemId),
+    index("finding_problem_links_sub_problem_id_idx").on(table.subProblemId),
+    // Note: the partial-unique index on (finding_id, problem_id, coalesce(sub_problem_id, sentinel))
+    // is declared in the SQL migration directly because Drizzle's uniqueIndex helper doesn't
+    // ergonomically express the coalesce-to-sentinel idiom for NULL-handling uniqueness.
+  ],
+);
+
+export const findingEdges = pgTable(
+  "finding_edges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    sourceFindingId: uuid("source_finding_id")
+      .notNull()
+      .references(() => findings.id, { onDelete: "cascade" }),
+    targetFindingId: uuid("target_finding_id")
+      .notNull()
+      .references(() => findings.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    /** 0.00–1.00. How strongly source supports/contradicts/elaborates target. */
+    strength: numeric("strength", { precision: 3, scale: 2 }).default("0.50").notNull(),
+    createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    createdByUserId: uuid("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "finding_edges_type_check",
+      sql`${table.type} in ${sql.raw(`(${findingEdgeTypeValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check("finding_edges_strength_check", sql`${table.strength} >= 0.00 and ${table.strength} <= 1.00`),
+    check("finding_edges_no_self_edge_check", sql`${table.sourceFindingId} <> ${table.targetFindingId}`),
+    check(
+      "finding_edges_creator_check",
+      sql`(${table.createdByAgentId} is not null and ${table.createdByUserId} is null) or (${table.createdByAgentId} is null and ${table.createdByUserId} is not null)`,
+    ),
+    uniqueIndex("finding_edges_unique_idx").on(
+      table.sourceFindingId,
+      table.targetFindingId,
+      table.type,
+    ),
+    index("finding_edges_source_idx").on(table.sourceFindingId),
+    index("finding_edges_target_idx").on(table.targetFindingId),
+  ],
+);
+
