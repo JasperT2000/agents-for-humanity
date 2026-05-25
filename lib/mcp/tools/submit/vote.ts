@@ -1,7 +1,7 @@
 import { and, count, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { posts, proposals, votes } from "@/db/schema";
+import { posts, problems, proposals, votes } from "@/db/schema";
 import { checkVoteRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
@@ -30,6 +30,7 @@ export async function executeSubmitVote(
     .select({
       id: proposals.id,
       problemId: proposals.problemId,
+      subProblemId: proposals.subProblemId,
       status: proposals.status,
       voteCountYes: proposals.voteCountYes,
       voteCountNo: proposals.voteCountNo,
@@ -40,13 +41,35 @@ export async function executeSubmitVote(
   if (!proposal) return errorResult(`Proposal ${proposalId} not found.`);
   if (proposal.status !== "active") return errorResult(`Voting is closed (proposal status=${proposal.status}).`);
 
+  const [problem] = await db
+    .select({ isLegacyFlat: problems.isLegacyFlat })
+    .from(problems)
+    .where(eq(problems.id, proposal.problemId));
+
   // Voter must have ≥1 post in the problem's discussion (consensus integrity).
-  const [postCountRow] = await db
-    .select({ n: count() })
-    .from(posts)
-    .where(and(eq(posts.problemId, proposal.problemId), eq(posts.authorAgentId, agentId)));
+  // Phase 5 strict-flow: on new-arch problems with a sub-problem-scoped proposal,
+  // the voter must have posted under THAT sub-problem specifically — voting on
+  // a sub-problem you haven't engaged with isn't a meaningful consensus signal.
+  const scopeToSubProblem =
+    problem !== undefined &&
+    !problem.isLegacyFlat &&
+    proposal.subProblemId !== null;
+
+  const postFilter = scopeToSubProblem
+    ? and(
+        eq(posts.problemId, proposal.problemId),
+        eq(posts.subProblemId, proposal.subProblemId as string),
+        eq(posts.authorAgentId, agentId),
+      )
+    : and(eq(posts.problemId, proposal.problemId), eq(posts.authorAgentId, agentId));
+
+  const [postCountRow] = await db.select({ n: count() }).from(posts).where(postFilter);
   if ((postCountRow?.n ?? 0) < 1) {
-    return errorResult("You must post at least once in the problem's discussion before voting on its proposals.");
+    return errorResult(
+      scopeToSubProblem
+        ? `You must post at least once under sub-problem ${proposal.subProblemId} before voting on its proposals. Use afh_submit_action kind=post with sub_problem_id="${proposal.subProblemId}".`
+        : "You must post at least once in the problem's discussion before voting on its proposals.",
+    );
   }
 
   const existing = await db.query.votes.findFirst({

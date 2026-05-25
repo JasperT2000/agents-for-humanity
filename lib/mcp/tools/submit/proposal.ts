@@ -1,7 +1,7 @@
 import { and, count, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { findings, posts, problems, proposals, subProblems } from "@/db/schema";
+import { findingProblemLinks, findings, posts, problems, proposals, subProblems } from "@/db/schema";
 import { checkProposalRateLimit } from "@/lib/agent-api/rate-limit";
 
 import { isUuid } from "../helpers";
@@ -61,11 +61,27 @@ export async function executeSubmitProposal(
   if (!db) return errorResult("Database is temporarily unavailable.");
 
   const [problem] = await db
-    .select({ id: problems.id, status: problems.status })
+    .select({ id: problems.id, status: problems.status, isLegacyFlat: problems.isLegacyFlat })
     .from(problems)
     .where(eq(problems.id, problemId));
   if (!problem) return errorResult(`Problem ${problemId} not found.`);
   if (problem.status === "hidden") return errorResult("That problem is hidden.");
+
+  // Phase 5 strict-flow gates: proposals on new-arch problems must be threaded
+  // under a sub-problem and cite at least one finding that is linked to that
+  // sub-problem. Legacy "flat" problems bypass.
+  if (!problem.isLegacyFlat) {
+    if (subProblemIdRaw === null) {
+      return errorResult(
+        `Proposals on this problem must be threaded under a sub-problem. Pass sub_problem_id — list them via afh_get_sub_problems { problem_id: "${problemId}" }.`,
+      );
+    }
+    if (citedFindingIds.length === 0) {
+      return errorResult(
+        `Proposals on this problem must cite at least one finding as evidence. Pass cited_finding_ids — list them via afh_get_findings { problem_id: "${problemId}" }, or create one via afh_submit_action kind=create_finding first.`,
+      );
+    }
+  }
 
   // Validate sub_problem_id belongs to this problem if supplied.
   if (subProblemIdRaw !== null) {
@@ -86,6 +102,29 @@ export async function executeSubmitProposal(
       const foundSet = new Set(found.map((r) => r.id));
       const missing = citedFindingIds.filter((id) => !foundSet.has(id));
       return errorResult(`cited_finding_ids includes unknown finding(s): ${missing.join(", ")}.`);
+    }
+
+    // Phase 5 strict-flow: every cited finding must be linked to THIS sub-problem.
+    // A finding linked to the problem only (not the sub-problem) doesn't count
+    // as evidence for a sub-problem-scoped proposal.
+    if (!problem.isLegacyFlat && subProblemIdRaw !== null) {
+      const linked = await db
+        .select({ findingId: findingProblemLinks.findingId })
+        .from(findingProblemLinks)
+        .where(
+          and(
+            inArray(findingProblemLinks.findingId, citedFindingIds),
+            eq(findingProblemLinks.problemId, problemId),
+            eq(findingProblemLinks.subProblemId, subProblemIdRaw),
+          ),
+        );
+      const linkedSet = new Set(linked.map((r) => r.findingId));
+      const unlinked = citedFindingIds.filter((id) => !linkedSet.has(id));
+      if (unlinked.length > 0) {
+        return errorResult(
+          `cited_finding_ids must each be linked to this sub-problem before being cited. Unlinked: ${unlinked.join(", ")}. Use afh_submit_action kind=link_finding_to_problem with sub_problem_id="${subProblemIdRaw}" for each.`,
+        );
+      }
     }
   }
 

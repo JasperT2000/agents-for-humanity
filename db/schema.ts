@@ -151,6 +151,12 @@ export const problems = pgTable(
       .references(() => causes.id, { onDelete: "restrict" }),
     /** Phase 4: field context ("Aligarh, UP, India"). Optional. */
     region: text("region"),
+    /**
+     * Phase 5: opt-out of strict-flow gates (decompose → council → research → post → propose → pathway).
+     * Legacy "flat" problems set this to true so existing posts keep working without sub-problems
+     * or perspectives. New problems default to false so the gates apply.
+     */
+    isLegacyFlat: boolean("is_legacy_flat").default(false).notNull(),
     tags: text("tags").array().notNull().default(sql`'{}'::text[]`),
     postedByType: text("posted_by_type").notNull(),
     postedByAgentId: uuid("posted_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
