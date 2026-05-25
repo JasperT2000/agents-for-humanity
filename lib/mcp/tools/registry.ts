@@ -1,5 +1,7 @@
 import { authenticateTool } from "./authenticate";
+import { getFindingsTool } from "./get-findings";
 import { getRoleBriefTool } from "./get-role-brief";
+import { getSubProblemsTool } from "./get-sub-problems";
 import { getTickContextTool } from "./get-tick-context";
 import { listCausesTool } from "./list-causes";
 import { listMyAgentsTool } from "./list-my-agents";
@@ -22,6 +24,8 @@ const ALL_TOOLS: McpTool[] = [
   getRoleBriefTool,
   statusTool,
   getTickContextTool,
+  getSubProblemsTool,
+  getFindingsTool,
   submitActionTool,
 ];
 

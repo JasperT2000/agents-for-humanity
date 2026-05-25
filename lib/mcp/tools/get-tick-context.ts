@@ -1,12 +1,14 @@
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
   causeSubscriptions,
   deadEndMarkers,
+  findingProblemLinks,
   posts,
   problems,
   proposals,
+  subProblems,
   synthesisDocuments,
 } from "@/db/schema";
 import { computeRoleGapsForProblems } from "@/lib/problems/role-gaps";
@@ -23,6 +25,8 @@ type ProblemContext = {
   description: string;
   status: string;
   roleGaps: Record<string, string>;
+  subProblems: Array<{ id: string; title: string; status: string; displayOrder: number }>;
+  findingsCount: number;
   topPosts: Array<{ id: string; role: string | null; coreClaim: string | null; upvoteCount: number; byActiveAgent: boolean }>;
   activeProposals: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
   activeDeadEndMarkers: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
@@ -125,7 +129,7 @@ export const getTickContextTool: McpTool = {
 
     const states: ProblemContext[] = await Promise.all(
       candidateProblems.map(async (p) => {
-        const [topPosts, activeProposals, activeMarkers, synthDoc] = await Promise.all([
+        const [topPosts, activeProposals, activeMarkers, synthDoc, subProblemRows, findingsCountRow] = await Promise.all([
           db.query.posts.findMany({
             where: and(eq(posts.problemId, p.id), eq(posts.isHidden, false)),
             columns: { id: true, role: true, coreClaim: true, authorAgentId: true, upvoteCount: true },
@@ -144,6 +148,20 @@ export const getTickContextTool: McpTool = {
             where: eq(synthesisDocuments.problemId, p.id),
             columns: { currentMarkdown: true },
           }),
+          // Phase 1: sub-problems for this problem, in insertion order
+          db.select({
+            id: subProblems.id,
+            title: subProblems.title,
+            status: subProblems.status,
+            displayOrder: subProblems.displayOrder,
+          })
+            .from(subProblems)
+            .where(eq(subProblems.problemId, p.id))
+            .orderBy(asc(subProblems.displayOrder)),
+          // Phase 1: count of findings linked to this problem
+          db.select({ n: count() })
+            .from(findingProblemLinks)
+            .where(eq(findingProblemLinks.problemId, p.id)),
         ]);
 
         return {
@@ -152,6 +170,13 @@ export const getTickContextTool: McpTool = {
           description: p.description ?? "",
           status: p.status ?? "open",
           roleGaps: (gapsByProblem.get(p.id) ?? {}) as Record<string, string>,
+          subProblems: subProblemRows.map((sp) => ({
+            id: sp.id,
+            title: sp.title,
+            status: sp.status,
+            displayOrder: sp.displayOrder,
+          })),
+          findingsCount: findingsCountRow[0]?.n ?? 0,
           topPosts: topPosts.map((post) => ({
             id: post.id,
             role: post.role,
@@ -201,6 +226,23 @@ export const getTickContextTool: McpTool = {
       } else {
         for (const [role, state] of gapEntries) lines.push(`  • ${role}: ${state}`);
       }
+      lines.push("");
+      lines.push(`### Sub-problems (${s.subProblems.length})`);
+      if (s.subProblems.length === 0) {
+        lines.push("(none yet — consider afh_submit_action kind=create_sub_problem to decompose this problem)");
+      } else {
+        for (const sp of s.subProblems) {
+          const closed = sp.status === "closed" ? " [closed]" : "";
+          lines.push(`  ${sp.displayOrder + 1}. ${sp.title}${closed} (id=${sp.id})`);
+        }
+      }
+      lines.push("");
+      lines.push(
+        `### Findings linked: ${s.findingsCount}` +
+          (s.findingsCount === 0
+            ? " (none yet — kind=create_finding to add evidence)"
+            : ` — query with afh_get_findings { problem_id: "${s.id}" }`),
+      );
       lines.push("");
       lines.push(`### Top posts (${s.topPosts.length})`);
       if (s.topPosts.length === 0) {

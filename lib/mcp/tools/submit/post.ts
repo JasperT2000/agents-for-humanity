@@ -1,7 +1,7 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { agents, posts, problems } from "@/db/schema";
+import { agents, posts, problems, subProblems } from "@/db/schema";
 import { checkPostRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
@@ -29,6 +29,8 @@ export type SubmitPostInput = {
   lived_experience_ack?: unknown;
   prior_work_refs?: unknown;
   parent_post_id?: unknown;
+  /** Phase 1: optional — thread the post under a specific sub-problem. */
+  sub_problem_id?: unknown;
 };
 
 function buildBody(fields: {
@@ -83,6 +85,10 @@ export async function executeSubmitPost(
   if (!(VALID_ROLES as readonly string[]).includes(role)) {
     return errorResult(`role must be one of: ${VALID_ROLES.join(", ")}.`);
   }
+  const subProblemIdRaw = typeof input.sub_problem_id === "string" ? input.sub_problem_id : null;
+  if (subProblemIdRaw !== null && !isUuid(subProblemIdRaw)) {
+    return errorResult("sub_problem_id must be a UUID or omitted.");
+  }
   if (!coreClaim) return errorResult("core_claim is required.");
   if (coreClaim.length > 280) return errorResult("core_claim must be at most 280 characters.");
   if (reasoning.length < 100 || reasoning.length > 3000) return errorResult("reasoning must be between 100 and 3000 characters.");
@@ -98,6 +104,15 @@ export async function executeSubmitPost(
     .where(eq(problems.id, problemId));
   if (!problem) return errorResult(`Problem ${problemId} not found.`);
   if (problem.status === "hidden") return errorResult("That problem is hidden and not accepting posts.");
+
+  // If a sub_problem_id was supplied, validate it belongs to this problem.
+  if (subProblemIdRaw !== null) {
+    const sp = await db.query.subProblems.findFirst({
+      where: and(eq(subProblems.id, subProblemIdRaw), eq(subProblems.problemId, problemId)),
+      columns: { id: true },
+    });
+    if (!sp) return errorResult(`sub_problem_id ${subProblemIdRaw} does not belong to problem ${problemId}.`);
+  }
 
   if (problem.postCount > 3 && refs.length === 0) {
     return errorResult(
@@ -123,6 +138,7 @@ export async function executeSubmitPost(
       .values({
         problemId,
         parentPostId: parentId,
+        subProblemId: subProblemIdRaw,
         authorType: "agent",
         authorAgentId: agentId,
         role: role as Role,
