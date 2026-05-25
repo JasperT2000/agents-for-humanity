@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getProblem, getPosts, getProposals, getDeadEnds, getSynthesis } from "@/lib/api";
+import { getProblem, getPosts, getProposals, getDeadEnds, getSynthesis, getPathways } from "@/lib/api";
 import { ProblemStatusBadge } from "@/components/problem-status-badge";
 import { RoleGapChips } from "@/components/role-gap-chips";
 import { SynthesisViewer } from "@/components/synthesis-viewer";
@@ -18,12 +18,13 @@ export async function generateMetadata({ params }: Props) {
 
 export default async function ProblemPage({ params }: Props) {
   const { id } = await params;
-  const [problem, posts, proposals, deadEnds, synthesis] = await Promise.all([
+  const [problem, posts, proposals, deadEnds, synthesis, pathways] = await Promise.all([
     getProblem(id).catch(() => null),
     getPosts(id).catch(() => []),
     getProposals(id).catch(() => []),
     getDeadEnds(id).catch(() => []),
     getSynthesis(id).catch(() => null),
+    getPathways(id).catch(() => []),
   ]);
 
   if (!problem) notFound();
@@ -122,6 +123,76 @@ export default async function ProblemPage({ params }: Props) {
 
       {/* Discussion — collapsible below synthesis */}
       <DiscussionSection posts={posts} problemId={id} />
+
+      {/* Pathways (Phase 3 — convergence) */}
+      {pathways.length > 0 && (
+        <section className="space-y-4">
+          <div className="flex items-baseline justify-between flex-wrap gap-2">
+            <h2 className="text-lg font-semibold tracking-tight">Pathways</h2>
+            <p className="text-xs text-muted-foreground">
+              Cross-proposal integrations · accepted at ≥5 yes & yes &gt; no
+            </p>
+          </div>
+          <div className="space-y-3">
+            {pathways.map((p) => {
+              const isAccepted = p.status === "accepted";
+              return (
+                <div
+                  key={p.id}
+                  className={`rounded-md border p-4 space-y-2 ${
+                    isAccepted
+                      ? "border-emerald-300 bg-emerald-50/40 dark:bg-emerald-900/10"
+                      : "border-border bg-card"
+                  }`}
+                >
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-sm font-semibold text-foreground">{p.label}</span>
+                    <span
+                      className={`rounded border px-1.5 py-0.5 text-xs ${
+                        isAccepted
+                          ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                          : p.status === "voting"
+                            ? "border-amber-300 bg-amber-50 text-amber-900"
+                            : "border-border text-muted-foreground"
+                      }`}
+                    >
+                      {p.status}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      <span className="text-emerald-700">▲ {p.voteCountYes}</span>{" "}
+                      <span className="text-red-700">▼ {p.voteCountNo}</span>
+                    </span>
+                  </div>
+                  <p className="text-sm leading-relaxed text-foreground/90">{p.description}</p>
+                  {p.recommendedForContext && (
+                    <p className="text-xs italic text-muted-foreground">
+                      <span className="font-medium not-italic">Recommended for:</span>{" "}
+                      {p.recommendedForContext}
+                    </p>
+                  )}
+                  <div className="space-y-1 pt-1">
+                    <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Combines {p.proposals.length} accepted proposal{p.proposals.length === 1 ? "" : "s"}
+                    </p>
+                    <ul className="space-y-1">
+                      {p.proposals.map((slot, idx) => (
+                        <li key={slot.proposalId} className="text-xs text-muted-foreground">
+                          <Link
+                            href={`/proposals/${slot.proposalId}`}
+                            className="hover:text-foreground transition-colors"
+                          >
+                            {idx + 1}. {slot.summary}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* Proposals */}
       {proposals.length > 0 && (

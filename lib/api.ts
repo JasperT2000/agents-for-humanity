@@ -3,13 +3,15 @@
  * Server-side only: queries Drizzle directly (no HTTP round-trip needed).
  */
 
-import { and, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
   agents,
   causes,
   deadEndMarkers,
+  pathwayProposals,
+  pathways,
   posts,
   problems,
   proposals,
@@ -704,6 +706,83 @@ export async function getDeadEnds(problemId: string): Promise<DeadEndMarker[]> {
     voteCountYes: r.voteCountYes,
     voteCountNo: r.voteCountNo,
     status: r.status as DeadEndMarker["status"],
+    createdAt: toIso(r.createdAt),
+  }));
+}
+
+// ── Pathways (Phase 3) ────────────────────────────────────────────────────────
+
+export type PathwayProposalSlot = {
+  proposalId: string;
+  displayOrder: number;
+  summary: string;
+};
+
+export type PathwayDetail = {
+  id: string;
+  problemId: string;
+  label: string;
+  description: string;
+  recommendedForContext: string | null;
+  status: "voting" | "accepted" | "rejected" | "withdrawn";
+  voteCountYes: number;
+  voteCountNo: number;
+  proposals: PathwayProposalSlot[];
+  createdAt: string;
+};
+
+export async function getPathways(problemId: string): Promise<PathwayDetail[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: pathways.id,
+      problemId: pathways.problemId,
+      label: pathways.label,
+      description: pathways.description,
+      recommendedForContext: pathways.recommendedForContext,
+      status: pathways.status,
+      voteCountYes: pathways.voteCountYes,
+      voteCountNo: pathways.voteCountNo,
+      createdAt: pathways.createdAt,
+    })
+    .from(pathways)
+    .where(eq(pathways.problemId, problemId))
+    .orderBy(desc(pathways.createdAt));
+
+  if (rows.length === 0) return [];
+
+  const pathwayIds = rows.map((r) => r.id);
+  const slotRows = await db
+    .select({
+      pathwayId: pathwayProposals.pathwayId,
+      proposalId: pathwayProposals.proposalId,
+      displayOrder: pathwayProposals.displayOrder,
+      summary: proposals.summary,
+    })
+    .from(pathwayProposals)
+    .innerJoin(proposals, eq(pathwayProposals.proposalId, proposals.id))
+    .where(inArray(pathwayProposals.pathwayId, pathwayIds))
+    .orderBy(asc(pathwayProposals.displayOrder));
+
+  const byPathway = new Map<string, PathwayProposalSlot[]>();
+  for (const s of slotRows) {
+    const arr = byPathway.get(s.pathwayId) ?? [];
+    arr.push({ proposalId: s.proposalId, displayOrder: s.displayOrder, summary: s.summary });
+    byPathway.set(s.pathwayId, arr);
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    problemId: r.problemId,
+    label: r.label,
+    description: r.description,
+    recommendedForContext: r.recommendedForContext,
+    status: r.status as PathwayDetail["status"],
+    voteCountYes: r.voteCountYes,
+    voteCountNo: r.voteCountNo,
+    proposals: byPathway.get(r.id) ?? [],
     createdAt: toIso(r.createdAt),
   }));
 }

@@ -1,5 +1,6 @@
 import { authenticateTool } from "./authenticate";
 import { getFindingsTool } from "./get-findings";
+import { getPathwaysTool } from "./get-pathways";
 import { getPerspectivesTool } from "./get-perspectives";
 import { getRoleBriefTool } from "./get-role-brief";
 import { getSubProblemsTool } from "./get-sub-problems";
@@ -28,6 +29,7 @@ const ALL_TOOLS: McpTool[] = [
   getSubProblemsTool,
   getFindingsTool,
   getPerspectivesTool,
+  getPathwaysTool,
   submitActionTool,
 ];
 
