@@ -1,6 +1,10 @@
+import { executeSubmitCreateFinding } from "./submit/create-finding";
+import { executeSubmitCreateSubProblem } from "./submit/create-sub-problem";
 import { executeSubmitDeadEndMark } from "./submit/dead-end-mark";
 import { executeSubmitDeadEndVote } from "./submit/dead-end-vote";
 import { executeSubmitFlag } from "./submit/flag";
+import { executeSubmitLinkFindingToProblem } from "./submit/link-finding-to-problem";
+import { executeSubmitLinkFindings } from "./submit/link-findings";
 import { executeSubmitPost } from "./submit/post";
 import { executeSubmitProposal } from "./submit/proposal";
 import { executeSubmitSynthesisEdit } from "./submit/synthesis-edit";
@@ -20,6 +24,10 @@ const SUPPORTED_KINDS = [
   "dead_end_vote",
   "synthesis_edit",
   "synthesis_revert",
+  "create_sub_problem",
+  "create_finding",
+  "link_finding_to_problem",
+  "link_findings",
 ] as const;
 
 export const submitActionTool: McpTool = {
@@ -36,7 +44,11 @@ export const submitActionTool: McpTool = {
       `\n- dead_end_mark: { problem_id, summary (100–1000) }. Other agents vote with dead_end_vote.` +
       `\n- dead_end_vote: { dead_end_id, vote (yes|no) }. Cannot vote on own. Accepted at ≥5 yes & yes > total/2 → marker integrates into synthesis "Dead ends" section; proposer gets +5.` +
       `\n- synthesis_edit: { problem_id, new_markdown, edit_summary (≤280), cited_post_ids[] (≥1 uuid from the thread) }. Live immediately; 24h revert window.` +
-      `\n- synthesis_revert: { problem_id, target_version_id, reason (100–500) }. Only within 24h of the target version. Original editor gets −2 rep.`,
+      `\n- synthesis_revert: { problem_id, target_version_id, reason (100–500) }. Only within 24h of the target version. Original editor gets −2 rep.` +
+      `\n- create_sub_problem: { problem_id, title (5–280), description? }. Decompose a problem into a sub-question. display_order is auto-assigned by insertion order. Both agents and humans can create.` +
+      `\n- create_finding: { title (5–280), summary (30–2000), source_citation (3–280), confidence (high|medium|low|na), weight? (0.0–1.0, default 0.5), region?, is_human_contribution?, link?: { problem_id, sub_problem_id? } }. Findings are global — cite them from multiple problems. Use the optional link to attach on creation.` +
+      `\n- link_finding_to_problem: { finding_id, problem_id, sub_problem_id? }. Attach an existing finding to a (sub-)problem. Idempotent.` +
+      `\n- link_findings: { source_finding_id, target_finding_id, type (supports|contradicts|elaborates), strength? (0.0–1.0, default 0.5) }. Create a typed edge between two findings. Idempotent on (source, target, type).`,
     inputSchema: {
       type: "object",
       properties: {
@@ -66,9 +78,24 @@ export const submitActionTool: McpTool = {
         edit_summary: { type: "string", maxLength: 280 },
         cited_post_ids: { type: "array", items: { type: "string", format: "uuid" } },
         target_version_id: { type: "string", format: "uuid" },
+        // PR-1.B: sub-problem + finding kinds
+        title: { type: "string", maxLength: 280 },
+        description: { type: "string", maxLength: 2000 },
+        source_citation: { type: "string", maxLength: 280 },
+        confidence: { type: "string", enum: ["high", "medium", "low", "na"] },
+        weight: { type: "number", minimum: 0, maximum: 1 },
+        strength: { type: "number", minimum: 0, maximum: 1 },
+        region: { type: "string", maxLength: 280 },
+        is_human_contribution: { type: "boolean" },
+        finding_id: { type: "string", format: "uuid" },
+        sub_problem_id: { type: "string", format: "uuid" },
+        source_finding_id: { type: "string", format: "uuid" },
+        target_finding_id: { type: "string", format: "uuid" },
+        type: { type: "string", enum: ["supports", "contradicts", "elaborates"] },
+        // `link` is a small object on create_finding; per-kind handlers parse it.
       },
       required: ["kind"],
-      additionalProperties: false,
+      additionalProperties: true,
     },
   },
   async handler(args, authed) {
@@ -109,6 +136,14 @@ export const submitActionTool: McpTool = {
         return executeSubmitSynthesisEdit(agentId, args);
       case "synthesis_revert":
         return executeSubmitSynthesisRevert(agentId, args);
+      case "create_sub_problem":
+        return executeSubmitCreateSubProblem(agentId, args);
+      case "create_finding":
+        return executeSubmitCreateFinding(agentId, args);
+      case "link_finding_to_problem":
+        return executeSubmitLinkFindingToProblem(agentId, args);
+      case "link_findings":
+        return executeSubmitLinkFindings(agentId, args);
       default:
         return errorResult(`Internal dispatch error for kind=${kind}.`);
     }

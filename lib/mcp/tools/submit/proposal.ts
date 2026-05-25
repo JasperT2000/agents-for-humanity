@@ -1,7 +1,7 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
-import { posts, problems, proposals } from "@/db/schema";
+import { findings, posts, problems, proposals, subProblems } from "@/db/schema";
 import { checkProposalRateLimit } from "@/lib/agent-api/rate-limit";
 
 import { isUuid } from "../helpers";
@@ -17,6 +17,10 @@ export type SubmitProposalInput = {
   scope?: unknown;
   success_criteria?: unknown;
   license?: unknown;
+  /** Phase 1: optional — thread under a specific sub-problem. */
+  sub_problem_id?: unknown;
+  /** Phase 1: optional — array of finding UUIDs cited as evidence. */
+  cited_finding_ids?: unknown;
 };
 
 export async function executeSubmitProposal(
@@ -31,6 +35,19 @@ export async function executeSubmitProposal(
   const license = typeof input.license === "string" ? input.license : "";
 
   if (!isUuid(problemId)) return errorResult("problem_id must be a UUID.");
+  const subProblemIdRaw = typeof input.sub_problem_id === "string" ? input.sub_problem_id : null;
+  if (subProblemIdRaw !== null && !isUuid(subProblemIdRaw)) {
+    return errorResult("sub_problem_id must be a UUID or omitted.");
+  }
+  const citedFindingIds: string[] = [];
+  if (Array.isArray(input.cited_finding_ids)) {
+    for (const f of input.cited_finding_ids) {
+      if (typeof f !== "string" || !isUuid(f)) return errorResult("Every cited_finding_ids entry must be a UUID.");
+      citedFindingIds.push(f);
+    }
+  } else if (input.cited_finding_ids != null) {
+    return errorResult("cited_finding_ids must be an array of UUIDs.");
+  }
   if (!summary) return errorResult("summary is required.");
   if (summary.length > 500) return errorResult("summary must be at most 500 characters.");
   if (fullProposal.length < 500 || fullProposal.length > 5000) return errorResult("full_proposal must be between 500 and 5000 characters.");
@@ -50,6 +67,28 @@ export async function executeSubmitProposal(
   if (!problem) return errorResult(`Problem ${problemId} not found.`);
   if (problem.status === "hidden") return errorResult("That problem is hidden.");
 
+  // Validate sub_problem_id belongs to this problem if supplied.
+  if (subProblemIdRaw !== null) {
+    const sp = await db.query.subProblems.findFirst({
+      where: and(eq(subProblems.id, subProblemIdRaw), eq(subProblems.problemId, problemId)),
+      columns: { id: true },
+    });
+    if (!sp) return errorResult(`sub_problem_id ${subProblemIdRaw} does not belong to problem ${problemId}.`);
+  }
+
+  // Validate every cited_finding_id exists.
+  if (citedFindingIds.length > 0) {
+    const found = await db
+      .select({ id: findings.id })
+      .from(findings)
+      .where(inArray(findings.id, citedFindingIds));
+    if (found.length !== citedFindingIds.length) {
+      const foundSet = new Set(found.map((r) => r.id));
+      const missing = citedFindingIds.filter((id) => !foundSet.has(id));
+      return errorResult(`cited_finding_ids includes unknown finding(s): ${missing.join(", ")}.`);
+    }
+  }
+
   const [postCountRow] = await db
     .select({ n: count() })
     .from(posts)
@@ -66,12 +105,14 @@ export async function executeSubmitProposal(
       .insert(proposals)
       .values({
         problemId,
+        subProblemId: subProblemIdRaw,
         createdByAgentId: agentId,
         summary,
         fullProposal,
         scope,
         successCriteria,
         license: license as License,
+        citedFindingIds,
         status: "active",
       })
       .returning({ id: proposals.id, createdAt: proposals.createdAt });
@@ -86,11 +127,13 @@ export async function executeSubmitProposal(
   });
 
   return textResult(
-    `Proposal submitted on problem ${problemId} (id=${result.id}). Problem status transitioned to "proposal" if it was open/discussion. Voting opens immediately; 5 yes votes (and yes > no) accepts it.`,
+    `Proposal submitted on problem ${problemId} (id=${result.id})${subProblemIdRaw ? ` under sub-problem ${subProblemIdRaw}` : ""}${citedFindingIds.length > 0 ? `, citing ${citedFindingIds.length} finding(s)` : ""}. Problem status transitioned to "proposal" if it was open/discussion. Voting opens immediately; 5 yes votes (and yes > no) accepts it.`,
     {
       kind: "proposal",
       proposal_id: result.id,
       problem_id: problemId,
+      sub_problem_id: subProblemIdRaw,
+      cited_finding_ids: citedFindingIds,
       created_at: result.createdAt,
     },
   );
