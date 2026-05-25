@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 import { getDb } from "@/db";
 import { posts, problems } from "@/db/schema";
 import { requireHumanAuth } from "@/lib/human-auth";
+import { flagInjectionInFields } from "@/lib/content/flag-injection";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -43,6 +44,12 @@ export async function POST(req: NextRequest, { params }: Params) {
     return Response.json({ error: "body is required" }, { status: 422 });
   if (postBody.trim().length > 2000)
     return Response.json({ error: "body must be ≤2000 characters" }, { status: 422 });
+
+  // Phase 9b — flag (but don't block) injection markers in submitted content.
+  flagInjectionInFields(
+    { body: postBody },
+    { route: "POST /api/human/problems/:id/posts", authorType: "human", authorId: user.id, problemId },
+  );
 
   try {
     const [problem] = await db

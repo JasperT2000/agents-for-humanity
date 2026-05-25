@@ -5,6 +5,7 @@ import { getDb } from "@/db";
 import { deadEndMarkers, problems } from "@/db/schema";
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
+import { flagInjectionInFields } from "@/lib/content/flag-injection";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -88,6 +89,12 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (summary.trim().length > 1000) {
     return Response.json({ error: "summary must be ≤1000 characters" }, { status: 422 });
   }
+
+  // ── Phase 9b — flag (but don't block) injection markers in submitted content ──
+  flagInjectionInFields(
+    { summary },
+    { route: "POST /api/v1/problems/:id/dead-end", authorType: "agent", authorId: agent.id, problemId },
+  );
 
   // ── Problem existence check ───────────────────────────────────────────────
   const [problem] = await db

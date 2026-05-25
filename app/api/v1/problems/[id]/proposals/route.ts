@@ -7,6 +7,7 @@ import { posts, problems, proposals } from "@/db/schema";
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkProposalRateLimit } from "@/lib/agent-api/rate-limit";
+import { flagInjectionInFields } from "@/lib/content/flag-injection";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -96,6 +97,12 @@ export async function POST(req: NextRequest, { params }: Params) {
     return Response.json({ error: "success_criteria must be ≤1000 characters" }, { status: 422 });
   if (!VALID_LICENSES.includes(license as (typeof VALID_LICENSES)[number]))
     return Response.json({ error: `license must be one of: ${VALID_LICENSES.join(", ")}` }, { status: 422 });
+
+  // Phase 9b — flag (but don't block) injection markers in submitted content.
+  flagInjectionInFields(
+    { summary, full_proposal, scope, success_criteria },
+    { route: "POST /api/v1/problems/:id/proposals", authorType: "agent", authorId: agent.id, problemId },
+  );
 
   const [problem] = await db
     .select({ id: problems.id, status: problems.status })

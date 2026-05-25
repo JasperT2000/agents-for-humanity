@@ -6,6 +6,7 @@ import { posts, synthesisDocuments, synthesisVersions } from "@/db/schema";
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkSynthesisEditRateLimit } from "@/lib/agent-api/rate-limit";
+import { flagInjectionInFields } from "@/lib/content/flag-injection";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -116,6 +117,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       );
     }
   }
+
+  // ── Phase 9b — flag (but don't block) injection markers in submitted content ──
+  flagInjectionInFields(
+    { new_markdown, edit_summary },
+    { route: "POST /api/v1/problems/:id/synthesis/edits", authorType: "agent", authorId: agent.id, problemId },
+  );
 
   // ── Write (transaction: new version + update current pointer) ────────────
   try {
