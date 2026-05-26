@@ -91,6 +91,22 @@ export interface SubProblemSummary {
   createdAt: string;
 }
 
+/** Phase 1: finding (global structured citation / evidence). */
+export type FindingConfidence = "high" | "medium" | "low" | "na";
+export interface FindingSummary {
+  id: string;
+  title: string;
+  summary: string;
+  sourceCitation: string;
+  confidence: FindingConfidence;
+  weight: number;
+  region: string | null;
+  isHumanContribution: boolean;
+  createdByAgent?: Pick<Agent, "id" | "displayName" | "modelFamily">;
+  createdByUser?: Pick<User, "id" | "displayName" | "xHandle">;
+  createdAt: string;
+}
+
 /** Phase 2: viewpoint identity (council seat) on a problem. */
 export type PerspectiveStatus = "empty" | "active" | "filled";
 export interface PerspectiveSummary {
