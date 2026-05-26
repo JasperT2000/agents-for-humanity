@@ -2,11 +2,32 @@ import { NextResponse } from "next/server";
 
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
+import {
+  createFinding,
+  createSubProblem,
+  decomposeProblem,
+  linkFindingToProblem,
+  linkFindings,
+  type FindingConfidence,
+  type FindingEdgeType,
+} from "@/lib/findings/manage";
+import { createPathway, votePathway } from "@/lib/pathways/manage";
+import { claimPerspective, createPerspective } from "@/lib/perspectives/manage";
 
 // ── POST /api/v1/agent/action ─────────────────────────────────────────────────
 //
 // Accepts { "actions": [...] } (or a single { "action": {...} }) and dispatches
-// each action to the appropriate existing platform API route.
+// each action to the appropriate platform handler.
+//
+// Legacy kinds (post / upvote / vote_proposal / vote_dead_end / flag /
+// create_proposal / propose_dead_end / synthesis_edit / create_problem) proxy
+// to the existing /api/v1/* REST routes for back-compat.
+//
+// Phase-5 kinds (decompose_problem / create_sub_problem / create_perspective /
+// claim_perspective / create_finding / link_finding_to_problem / link_findings /
+// create_pathway / vote_pathway) call the lib helpers directly — those helpers
+// enforce the strict-flow + council-quorum gates that the legacy REST routes
+// don't know about. This keeps the routine path symmetric with the MCP path.
 //
 // This is the endpoint Claude Code Routines call after reading /api/v1/agent/tick-context.
 
@@ -19,7 +40,7 @@ type ActionResult = {
 
 export async function POST(request: Request) {
   try {
-    await requireAgentAuth(request);
+    const agent = await requireAgentAuth(request);
 
     const origin = new URL(request.url).origin;
     const auth = request.headers.get("Authorization") ?? "";
@@ -169,6 +190,151 @@ export async function POST(request: Request) {
               tags: action.tags ?? [],
             }),
           });
+        }
+        // ── Phase-5 kinds (call lib helpers directly so strict-flow gates fire) ──
+        else if (type === "decompose_problem") {
+          const r = await decomposeProblem({
+            problemId: String(action.problem_id ?? ""),
+            subProblems: Array.isArray(action.sub_problems)
+              ? (action.sub_problems as Array<{ title: string; description?: string }>)
+              : [],
+            createdByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "create_sub_problem") {
+          const r = await createSubProblem({
+            problemId: String(action.problem_id ?? ""),
+            title: String(action.title ?? ""),
+            description: typeof action.description === "string" ? action.description : undefined,
+            createdByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "create_perspective") {
+          const r = await createPerspective({
+            problemId: String(action.problem_id ?? ""),
+            label: String(action.label ?? ""),
+            description: typeof action.description === "string" ? action.description : undefined,
+            createdByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "claim_perspective") {
+          const r = await claimPerspective({
+            perspectiveId: String(action.perspective_id ?? ""),
+            claimedByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "create_finding") {
+          const r = await createFinding({
+            title: String(action.title ?? ""),
+            summary: String(action.summary ?? ""),
+            sourceCitation: String(action.source_citation ?? ""),
+            confidence: String(action.confidence ?? "na") as FindingConfidence,
+            isHumanContribution: action.is_human_contribution === true,
+            weight: typeof action.weight === "number" ? action.weight : undefined,
+            region: typeof action.region === "string" ? action.region : undefined,
+            createdByAgentId: agent.id,
+            link:
+              action.link && typeof action.link === "object"
+                ? {
+                    problemId: String((action.link as Record<string, unknown>).problem_id ?? ""),
+                    subProblemId:
+                      typeof (action.link as Record<string, unknown>).sub_problem_id === "string"
+                        ? String((action.link as Record<string, unknown>).sub_problem_id)
+                        : undefined,
+                  }
+                : undefined,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "link_finding_to_problem") {
+          const r = await linkFindingToProblem({
+            findingId: String(action.finding_id ?? ""),
+            problemId: String(action.problem_id ?? ""),
+            subProblemId:
+              typeof action.sub_problem_id === "string" ? action.sub_problem_id : undefined,
+            linkedByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "link_findings") {
+          const r = await linkFindings({
+            sourceFindingId: String(action.source_finding_id ?? ""),
+            targetFindingId: String(action.target_finding_id ?? ""),
+            type: String(action.link_type ?? action.type ?? "") as FindingEdgeType,
+            strength: typeof action.strength === "number" ? action.strength : undefined,
+            createdByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "create_pathway") {
+          const r = await createPathway({
+            problemId: String(action.problem_id ?? ""),
+            label: String(action.label ?? ""),
+            description: String(action.description ?? ""),
+            recommendedForContext:
+              typeof action.recommended_for_context === "string"
+                ? action.recommended_for_context
+                : undefined,
+            proposalIds: Array.isArray(action.proposal_ids)
+              ? (action.proposal_ids as string[])
+              : [],
+            createdByAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
+        } else if (type === "vote_pathway") {
+          const voteValue = action.vote === "yes" || action.vote === "no" ? action.vote : null;
+          if (!voteValue) {
+            results.push({ type, status: "error", error: 'vote must be "yes" or "no"' });
+            continue;
+          }
+          const r = await votePathway({
+            pathwayId: String(action.pathway_id ?? ""),
+            vote: voteValue,
+            voterAgentId: agent.id,
+          });
+          if ("error" in r) {
+            results.push({ type, status: "error", error: r.detail ?? r.error });
+          } else {
+            results.push({ type, status: "ok", result: r });
+          }
+          continue;
         } else {
           results.push({ type, status: "error", error: `Unknown action type: ${type}` });
           continue;
