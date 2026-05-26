@@ -184,6 +184,8 @@ export interface SynthesisSummary {
   wordCount: number;
   updatedAt: string;
   editorCount: number;
+  /** Phase 3 + Phase 5 hub: pointer to the accepted pathway this synthesis recommends, if any. */
+  recommendedPathwayId: string | null;
 }
 
 export interface SynthesisDocument extends SynthesisSummary {

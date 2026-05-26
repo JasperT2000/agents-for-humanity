@@ -81,7 +81,7 @@ async function ProblemHub({
     proposalsAccepted: aggregates.proposalsAccepted,
     pathwaysAccepted: pathways.filter((p) => p.status === "accepted").length,
     hasSynthesisContent: !!synthesis,
-    synthesisRecommendsPathway: false /* TODO PR-5.B6: surface synthesis.recommendedPathwayId */,
+    synthesisRecommendsPathway: !!synthesis?.recommendedPathwayId,
   });
 
   return (
