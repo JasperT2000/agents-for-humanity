@@ -11,6 +11,7 @@ import {
   causes,
   deadEndMarkers,
   findingProblemLinks,
+  findings,
   pathwayProposals,
   pathways,
   perspectives,
@@ -30,6 +31,8 @@ import type {
   AgentProfile,
   Cause,
   DeadEndMarker,
+  FindingConfidence,
+  FindingSummary,
   PerspectiveStatus,
   PerspectiveSummary,
   PlatformStats,
@@ -997,5 +1000,346 @@ export async function getPerspectives(problemId: string): Promise<PerspectiveSum
       if (u) summary.filledByUser = { id: u.id, displayName: u.displayName, xHandle: u.xHandle };
     }
     return summary;
+  });
+}
+
+// ── Sub-problem detail-page helpers (PR-5.B2) ────────────────────────────────
+
+/**
+ * Fetch a single sub-problem with its parent problem id for back-nav + tab title.
+ * Returns null if not found.
+ */
+export async function getSubProblem(subProblemId: string): Promise<SubProblemSummary | null> {
+  const db = getDb();
+  if (!db) return null;
+
+  const [row] = await db
+    .select({
+      id: subProblems.id,
+      problemId: subProblems.problemId,
+      title: subProblems.title,
+      description: subProblems.description,
+      displayOrder: subProblems.displayOrder,
+      status: subProblems.status,
+      createdAt: subProblems.createdAt,
+    })
+    .from(subProblems)
+    .where(eq(subProblems.id, subProblemId));
+
+  if (!row) return null;
+
+  const [postCountRow, findingCountRow, proposalCountRow] = await Promise.all([
+    db.select({ n: count() }).from(posts).where(and(eq(posts.subProblemId, row.id), eq(posts.isHidden, false))),
+    db.select({ n: count() }).from(findingProblemLinks).where(eq(findingProblemLinks.subProblemId, row.id)),
+    db.select({ n: count() }).from(proposals).where(eq(proposals.subProblemId, row.id)),
+  ]);
+
+  return {
+    id: row.id,
+    problemId: row.problemId,
+    title: row.title,
+    description: row.description,
+    displayOrder: row.displayOrder,
+    status: row.status as "open" | "closed",
+    postCount: postCountRow[0]?.n ?? 0,
+    findingsCount: findingCountRow[0]?.n ?? 0,
+    proposalCount: proposalCountRow[0]?.n ?? 0,
+    createdAt: toIso(row.createdAt),
+  };
+}
+
+/**
+ * Posts threaded under a specific sub-problem, in chronological order.
+ * `limit` and `offset` support cursor-style pagination for the "Load more"
+ * button on the sub-problem detail page.
+ *
+ * Returns root posts with their replies nested, matching the shape `getPosts`
+ * uses for the legacy flat view. Replies are matched only if their parent is
+ * also in the returned root set — replies whose parent is older than the
+ * current window get hoisted as roots in this slice (acceptable trade-off
+ * to avoid an unbounded look-back per page).
+ */
+export async function getPostsBySubProblem(
+  problemId: string,
+  subProblemId: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<Post[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+  const offset = Math.max(0, opts.offset ?? 0);
+
+  const rows = await db
+    .select({
+      id: posts.id,
+      problemId: posts.problemId,
+      parentPostId: posts.parentPostId,
+      authorType: posts.authorType,
+      authorAgentId: posts.authorAgentId,
+      authorUserId: posts.authorUserId,
+      role: posts.role,
+      coreClaim: posts.coreClaim,
+      reasoning: posts.reasoning,
+      assumptions: posts.assumptions,
+      uncertainty: posts.uncertainty,
+      livedExperienceAck: posts.livedExperienceAck,
+      priorWorkRefs: posts.priorWorkRefs,
+      body: posts.body,
+      upvoteCount: posts.upvoteCount,
+      downvoteCount: posts.downvoteCount,
+      flagCount: posts.flagCount,
+      isHidden: posts.isHidden,
+      createdAt: posts.createdAt,
+    })
+    .from(posts)
+    .where(
+      and(
+        eq(posts.problemId, problemId),
+        eq(posts.subProblemId, subProblemId),
+        eq(posts.isHidden, false),
+      ),
+    )
+    .orderBy(asc(posts.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  if (rows.length === 0) return [];
+
+  const agentIds = [...new Set(rows.map((r) => r.authorAgentId).filter(Boolean) as string[])];
+  const userIds = [...new Set(rows.map((r) => r.authorUserId).filter(Boolean) as string[])];
+
+  const [agentRows, userRows] = await Promise.all([
+    agentIds.length > 0
+      ? db
+          .select({
+            id: agents.id,
+            displayName: agents.displayName,
+            modelFamily: agents.modelFamily,
+            reputationScore: agents.reputationScore,
+            xHandle: users.xHandle,
+          })
+          .from(agents)
+          .leftJoin(users, eq(agents.ownerUserId, users.id))
+          .where(inArray(agents.id, agentIds))
+      : Promise.resolve([]),
+    userIds.length > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName, xHandle: users.xHandle })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
+  ]);
+
+  const agentMap = new Map(agentRows.map((a) => [a.id, a]));
+  const userMap = new Map(userRows.map((u) => [u.id, u]));
+
+  const toPost = (r: (typeof rows)[number]): Post => {
+    const post: Post = {
+      id: r.id,
+      problemId: r.problemId,
+      parentPostId: r.parentPostId,
+      authorType: r.authorType as "agent" | "human",
+      role: r.role as Post["role"],
+      coreClaim: r.coreClaim,
+      reasoning: r.reasoning,
+      assumptions: r.assumptions,
+      uncertainty: r.uncertainty,
+      livedExperienceAck: r.livedExperienceAck,
+      priorWorkRefs: r.priorWorkRefs,
+      body: r.body,
+      upvoteCount: r.upvoteCount,
+      downvoteCount: r.downvoteCount,
+      flagCount: r.flagCount,
+      isHidden: r.isHidden,
+      createdAt: toIso(r.createdAt),
+    };
+    if (r.authorType === "agent" && r.authorAgentId) {
+      const a = agentMap.get(r.authorAgentId);
+      if (a) {
+        post.authorAgent = {
+          id: a.id,
+          displayName: a.displayName,
+          modelFamily: a.modelFamily as Agent["modelFamily"],
+          reputationScore: a.reputationScore,
+          ownerXHandle: a.xHandle ?? null,
+        };
+      }
+    } else if (r.authorType === "human" && r.authorUserId) {
+      const u = userMap.get(r.authorUserId);
+      if (u) post.authorUser = { id: u.id, displayName: u.displayName, xHandle: u.xHandle };
+    }
+    return post;
+  };
+
+  const inSlice = new Set(rows.map((r) => r.id));
+  const allPosts = rows.map(toPost);
+  const roots = allPosts.filter((p) => !p.parentPostId || !inSlice.has(p.parentPostId));
+  const replies = allPosts.filter((p) => p.parentPostId && inSlice.has(p.parentPostId));
+
+  return roots.map((root) => ({
+    ...root,
+    replies: replies.filter((r) => r.parentPostId === root.id),
+  }));
+}
+
+/**
+ * Proposals scoped to a sub-problem, newest first. Includes active + accepted
+ * + rejected (so the sub-problem page shows the full proposal history).
+ */
+export async function getProposalsBySubProblem(
+  problemId: string,
+  subProblemId: string,
+): Promise<Proposal[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: proposals.id,
+      problemId: proposals.problemId,
+      createdByAgentId: proposals.createdByAgentId,
+      summary: proposals.summary,
+      fullProposal: proposals.fullProposal,
+      scope: proposals.scope,
+      successCriteria: proposals.successCriteria,
+      license: proposals.license,
+      voteCountYes: proposals.voteCountYes,
+      voteCountNo: proposals.voteCountNo,
+      status: proposals.status,
+      citedFindingIds: proposals.citedFindingIds,
+      createdAt: proposals.createdAt,
+    })
+    .from(proposals)
+    .where(and(eq(proposals.problemId, problemId), eq(proposals.subProblemId, subProblemId)))
+    .orderBy(desc(proposals.createdAt));
+
+  if (rows.length === 0) return [];
+
+  const agentIds = [...new Set(rows.map((r) => r.createdByAgentId))];
+  const agentRows = agentIds.length
+    ? await db
+        .select({
+          id: agents.id,
+          displayName: agents.displayName,
+          modelFamily: agents.modelFamily,
+          reputationScore: agents.reputationScore,
+        })
+        .from(agents)
+        .where(inArray(agents.id, agentIds))
+    : [];
+  const agentMap = new Map(agentRows.map((a) => [a.id, a]));
+
+  return rows.map((r) => {
+    const a = agentMap.get(r.createdByAgentId);
+    return {
+      id: r.id,
+      problemId: r.problemId,
+      createdByAgent: a
+        ? {
+            id: a.id,
+            displayName: a.displayName,
+            modelFamily: a.modelFamily as Agent["modelFamily"],
+          }
+        : { id: r.createdByAgentId, displayName: "(unknown)", modelFamily: "other" },
+      summary: r.summary,
+      fullProposal: r.fullProposal,
+      scope: r.scope,
+      successCriteria: r.successCriteria,
+      license: r.license as Proposal["license"],
+      voteCountYes: r.voteCountYes,
+      voteCountNo: r.voteCountNo,
+      status: r.status as Proposal["status"],
+      createdAt: toIso(r.createdAt),
+    };
+  });
+}
+
+/**
+ * Findings linked to a specific sub-problem. A finding linked at the problem
+ * level (sub_problem_id = null) does NOT appear here — those show on the
+ * problem hub. Sorted highest-weight then newest.
+ */
+export async function getFindingsForSubProblem(
+  problemId: string,
+  subProblemId: string,
+): Promise<FindingSummary[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: findings.id,
+      title: findings.title,
+      summary: findings.summary,
+      sourceCitation: findings.sourceCitation,
+      confidence: findings.confidence,
+      weight: findings.weight,
+      region: findings.region,
+      isHumanContribution: findings.isHumanContribution,
+      createdByAgentId: findings.createdByAgentId,
+      createdByUserId: findings.createdByUserId,
+      createdAt: findings.createdAt,
+    })
+    .from(findings)
+    .innerJoin(findingProblemLinks, eq(findingProblemLinks.findingId, findings.id))
+    .where(
+      and(
+        eq(findingProblemLinks.problemId, problemId),
+        eq(findingProblemLinks.subProblemId, subProblemId),
+      ),
+    )
+    .orderBy(desc(findings.weight), desc(findings.createdAt));
+
+  if (rows.length === 0) return [];
+
+  const agentIds = [...new Set(rows.map((r) => r.createdByAgentId).filter(Boolean) as string[])];
+  const userIds = [...new Set(rows.map((r) => r.createdByUserId).filter(Boolean) as string[])];
+
+  const [agentRows, userRows] = await Promise.all([
+    agentIds.length > 0
+      ? db
+          .select({ id: agents.id, displayName: agents.displayName, modelFamily: agents.modelFamily })
+          .from(agents)
+          .where(inArray(agents.id, agentIds))
+      : Promise.resolve([]),
+    userIds.length > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName, xHandle: users.xHandle })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
+  ]);
+
+  const agentMap = new Map(agentRows.map((a) => [a.id, a]));
+  const userMap = new Map(userRows.map((u) => [u.id, u]));
+
+  return rows.map((r) => {
+    const finding: FindingSummary = {
+      id: r.id,
+      title: r.title,
+      summary: r.summary,
+      sourceCitation: r.sourceCitation,
+      confidence: r.confidence as FindingConfidence,
+      weight: Number(r.weight),
+      region: r.region,
+      isHumanContribution: r.isHumanContribution,
+      createdAt: toIso(r.createdAt),
+    };
+    if (r.createdByAgentId) {
+      const a = agentMap.get(r.createdByAgentId);
+      if (a) {
+        finding.createdByAgent = {
+          id: a.id,
+          displayName: a.displayName,
+          modelFamily: a.modelFamily as Agent["modelFamily"],
+        };
+      }
+    }
+    if (r.createdByUserId) {
+      const u = userMap.get(r.createdByUserId);
+      if (u) finding.createdByUser = { id: u.id, displayName: u.displayName, xHandle: u.xHandle };
+    }
+    return finding;
   });
 }
