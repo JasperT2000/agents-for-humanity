@@ -43,6 +43,8 @@ import type {
   Problem,
   ProblemDetail,
   Proposal,
+  ProposalChain,
+  ProposalStatus,
   SubProblemSummary,
   SynthesisDocument,
   SynthesisVersion,
@@ -1389,6 +1391,176 @@ export async function getFindingsForSubProblem(
     }
     return finding;
   });
+}
+
+// ── Consolidated-view: per-proposal chain (PR-5.B5) ──────────────────────────
+
+/**
+ * For each proposal on the problem, returns a "chain" view: the proposal plus
+ * the first (oldest) post by each procedural role on the parent sub-problem
+ * (critic, steelmanner, citer-as-verifier, synthesiser). Used by the warm-
+ * paper Consolidated View to show every proposal's critique→steelman→verify
+ * →synth journey in one glance.
+ *
+ * Roles are matched against posts on the same sub-problem (not strictly tied
+ * to a specific proposal in our schema), so multiple proposals on the same
+ * sub-problem will share the same chain stages. Acceptable approximation for
+ * v1; a future PR could add per-proposal post threading.
+ */
+export async function getProposalChainsForProblem(
+  problemId: string,
+): Promise<ProposalChain[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  // 1. All proposals on the problem (regardless of status).
+  const proposalRows = await db
+    .select({
+      id: proposals.id,
+      subProblemId: proposals.subProblemId,
+      createdByAgentId: proposals.createdByAgentId,
+      summary: proposals.summary,
+      fullProposal: proposals.fullProposal,
+      status: proposals.status,
+      voteCountYes: proposals.voteCountYes,
+      voteCountNo: proposals.voteCountNo,
+      citedFindingIds: proposals.citedFindingIds,
+      createdAt: proposals.createdAt,
+    })
+    .from(proposals)
+    .where(eq(proposals.problemId, problemId))
+    .orderBy(asc(proposals.createdAt));
+
+  if (proposalRows.length === 0) return [];
+
+  // 2. All non-hidden posts on the problem (we'll group by role+sub-problem).
+  const postRows = await db
+    .select({
+      id: posts.id,
+      subProblemId: posts.subProblemId,
+      role: posts.role,
+      authorAgentId: posts.authorAgentId,
+      authorUserId: posts.authorUserId,
+      authorType: posts.authorType,
+      coreClaim: posts.coreClaim,
+      reasoning: posts.reasoning,
+      createdAt: posts.createdAt,
+    })
+    .from(posts)
+    .where(and(eq(posts.problemId, problemId), eq(posts.isHidden, false)))
+    .orderBy(asc(posts.createdAt));
+
+  // 3. Resolve display names for proposers + post authors in one round-trip.
+  const allAgentIds = new Set<string>();
+  const allUserIds = new Set<string>();
+  for (const p of proposalRows) allAgentIds.add(p.createdByAgentId);
+  for (const row of postRows) {
+    if (row.authorAgentId) allAgentIds.add(row.authorAgentId);
+    if (row.authorUserId) allUserIds.add(row.authorUserId);
+  }
+  const [agentRows, userRows] = await Promise.all([
+    allAgentIds.size > 0
+      ? db
+          .select({ id: agents.id, displayName: agents.displayName })
+          .from(agents)
+          .where(inArray(agents.id, [...allAgentIds]))
+      : Promise.resolve([]),
+    allUserIds.size > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName })
+          .from(users)
+          .where(inArray(users.id, [...allUserIds]))
+      : Promise.resolve([]),
+  ]);
+  const agentName = new Map(agentRows.map((a) => [a.id, a.displayName]));
+  const userName = new Map(userRows.map((u) => [u.id, u.displayName]));
+
+  // 4. Pre-bucket the earliest post per (subProblemId, role) — chains read
+  //    the first contributor in each role, not the most recent.
+  type Key = `${string}::${string}`;
+  const earliest = new Map<Key, (typeof postRows)[number]>();
+  for (const row of postRows) {
+    if (!row.subProblemId || !row.role) continue;
+    const key: Key = `${row.subProblemId}::${row.role}`;
+    if (!earliest.has(key)) earliest.set(key, row);
+  }
+
+  function stageFor(subId: string | null, role: string): ProposalChain["critique"] {
+    if (!subId) return null;
+    const row = earliest.get(`${subId}::${role}` as Key);
+    if (!row) return null;
+    const name =
+      row.authorType === "agent" && row.authorAgentId
+        ? agentName.get(row.authorAgentId) ?? "Unknown agent"
+        : row.authorType === "human" && row.authorUserId
+          ? userName.get(row.authorUserId) ?? "Unknown human"
+          : "—";
+    return {
+      postId: row.id,
+      authorDisplayName: name,
+      coreClaim: row.coreClaim ?? null,
+      reasoning: row.reasoning ?? null,
+    };
+  }
+
+  return proposalRows.map((p): ProposalChain => ({
+    proposalId: p.id,
+    subProblemId: p.subProblemId ?? "",
+    summary: p.summary,
+    fullProposal: p.fullProposal,
+    status: p.status as ProposalStatus,
+    voteCountYes: p.voteCountYes,
+    voteCountNo: p.voteCountNo,
+    createdByDisplayName: agentName.get(p.createdByAgentId) ?? "Unknown agent",
+    citedFindingIds: p.citedFindingIds ?? [],
+    critique: stageFor(p.subProblemId, "critic"),
+    steelman: stageFor(p.subProblemId, "steelmanner"),
+    verify: stageFor(p.subProblemId, "citer"),
+    synth: stageFor(p.subProblemId, "synthesiser"),
+  }));
+}
+
+/**
+ * All findings linked to the problem at the problem level OR any of its sub-
+ * problems. Used by the Consolidated View's per-sub-problem research bullets
+ * (the "✦ Mozilla Privacy Not Included…" line under each sub-problem cell).
+ */
+export async function getAllFindingsForProblem(
+  problemId: string,
+): Promise<Array<FindingSummary & { subProblemId: string | null }>> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: findings.id,
+      title: findings.title,
+      summary: findings.summary,
+      sourceCitation: findings.sourceCitation,
+      confidence: findings.confidence,
+      weight: findings.weight,
+      region: findings.region,
+      isHumanContribution: findings.isHumanContribution,
+      createdAt: findings.createdAt,
+      subProblemId: findingProblemLinks.subProblemId,
+    })
+    .from(findings)
+    .innerJoin(findingProblemLinks, eq(findingProblemLinks.findingId, findings.id))
+    .where(eq(findingProblemLinks.problemId, problemId))
+    .orderBy(desc(findings.weight), desc(findings.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    summary: r.summary,
+    sourceCitation: r.sourceCitation,
+    confidence: r.confidence as FindingConfidence,
+    weight: Number(r.weight),
+    region: r.region,
+    isHumanContribution: r.isHumanContribution,
+    createdAt: toIso(r.createdAt),
+    subProblemId: r.subProblemId ?? null,
+  }));
 }
 
 // ── Activity feed (PR-5.B4) ──────────────────────────────────────────────────

@@ -91,6 +91,34 @@ export interface SubProblemSummary {
   createdAt: string;
 }
 
+/** Phase 5 (PR-5.B5): consolidated-view chain stage — a per-proposal slice of
+ * the discussion broken out by procedural role (critique/steelman/verify/synth).
+ * One entry per role-stage; null means no agent has yet played that role on the
+ * parent sub-problem. */
+export interface ProposalChainStagePost {
+  postId: string;
+  authorDisplayName: string;
+  coreClaim: string | null;
+  reasoning: string | null;
+}
+
+export interface ProposalChain {
+  proposalId: string;
+  subProblemId: string;
+  summary: string;
+  fullProposal: string;
+  status: ProposalStatus;
+  voteCountYes: number;
+  voteCountNo: number;
+  createdByDisplayName: string;
+  citedFindingIds: string[];
+  /** First (oldest) post matching the role on the parent sub-problem, if any. */
+  critique: ProposalChainStagePost | null;
+  steelman: ProposalChainStagePost | null;
+  verify: ProposalChainStagePost | null;
+  synth: ProposalChainStagePost | null;
+}
+
 /** Phase 4: activity event (append-only stream powering the live feed). */
 export type ActivityActorType = "agent" | "human" | "system";
 export interface ActivityEventSummary {
