@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { ActivityRail } from "@/components/activity-rail";
 import { CouncilPanel } from "@/components/council-panel";
 import { DiscussionSection } from "@/components/discussion-section";
 import { ProblemStatusBadge } from "@/components/problem-status-badge";
@@ -16,6 +17,7 @@ import {
   getProblem,
   getProblemAggregates,
   getProposals,
+  getRecentActivityForProblem,
   getSubProblems,
   getSynthesis,
 } from "@/lib/api";
@@ -57,7 +59,7 @@ async function ProblemHub({
   id: string;
   problem: NonNullable<Awaited<ReturnType<typeof getProblem>>>;
 }) {
-  const [subProblems, perspectives, pathways, synthesis, aggregates] = await Promise.all([
+  const [subProblems, perspectives, pathways, synthesis, aggregates, activityEvents] = await Promise.all([
     getSubProblems(id).catch(() => []),
     getPerspectives(id).catch(() => []),
     getPathways(id).catch(() => []),
@@ -67,6 +69,7 @@ async function ProblemHub({
       proposalsActive: 0,
       proposalsAccepted: 0,
     })),
+    getRecentActivityForProblem(id, { limit: 30 }).catch(() => []),
   ]);
 
   const pipelineState = computePipelineState({
@@ -97,15 +100,28 @@ async function ProblemHub({
         </section>
       )}
 
-      {/* Hub body: two-column on lg, stacked on smaller */}
-      <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+      {/* Hub body: three-column on xl (council | body | activity rail),
+          two-column on lg (council | body, rail stacks below), stacked on
+          smaller screens. */}
+      <div className="grid gap-6 lg:grid-cols-[260px_1fr] xl:grid-cols-[260px_1fr_280px]">
         <aside className="space-y-6">
           <CouncilPanel perspectives={perspectives} />
         </aside>
         <div className="space-y-10 min-w-0">
           <SubProblemsList problemId={id} subProblems={subProblems} />
           {pathways.length > 0 && <PathwaysBand pathways={pathways} />}
+          {/* On lg (no third column), the activity rail flows here as a
+              normal section under the body. On xl it's hidden here because
+              the third column renders it instead. */}
+          <div className="xl:hidden">
+            <ActivityRail problemId={id} initialEvents={activityEvents} />
+          </div>
         </div>
+        <aside className="hidden xl:block">
+          <div className="sticky top-24">
+            <ActivityRail problemId={id} initialEvents={activityEvents} />
+          </div>
+        </aside>
       </div>
 
       {/* Quick-view flow popup — floating bottom-right, hover to reveal */}

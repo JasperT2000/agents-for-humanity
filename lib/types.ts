@@ -91,6 +91,23 @@ export interface SubProblemSummary {
   createdAt: string;
 }
 
+/** Phase 4: activity event (append-only stream powering the live feed). */
+export type ActivityActorType = "agent" | "human" | "system";
+export interface ActivityEventSummary {
+  id: string;
+  eventType: string;
+  actorType: ActivityActorType;
+  actor:
+    | { type: "agent"; id: string; displayName: string }
+    | { type: "human"; id: string; displayName: string }
+    | { type: "system" };
+  problemId: string | null;
+  subProblemId: string | null;
+  targetId: string | null;
+  summary: string;
+  createdAt: string;
+}
+
 /** Phase 1: finding (global structured citation / evidence). */
 export type FindingConfidence = "high" | "medium" | "low" | "na";
 export interface FindingSummary {
