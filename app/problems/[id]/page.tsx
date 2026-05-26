@@ -2,20 +2,22 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ActivityRail } from "@/components/activity-rail";
+import { ConsolidatedView } from "@/components/consolidated-view";
 import { CouncilPanel } from "@/components/council-panel";
 import { DiscussionSection } from "@/components/discussion-section";
 import { ProblemStatusBadge } from "@/components/problem-status-badge";
-import { QuickViewFlow } from "@/components/quick-view-flow";
 import { RoleGapChips } from "@/components/role-gap-chips";
 import { SubProblemsList } from "@/components/sub-problems-list";
 import { SynthesisViewer } from "@/components/synthesis-viewer";
 import {
+  getAllFindingsForProblem,
   getDeadEnds,
   getPathways,
   getPerspectives,
   getPosts,
   getProblem,
   getProblemAggregates,
+  getProposalChainsForProblem,
   getProposals,
   getRecentActivityForProblem,
   getSubProblems,
@@ -59,7 +61,7 @@ async function ProblemHub({
   id: string;
   problem: NonNullable<Awaited<ReturnType<typeof getProblem>>>;
 }) {
-  const [subProblems, perspectives, pathways, synthesis, aggregates, activityEvents] = await Promise.all([
+  const [subProblems, perspectives, pathways, synthesis, aggregates, activityEvents, proposalChains, allFindings] = await Promise.all([
     getSubProblems(id).catch(() => []),
     getPerspectives(id).catch(() => []),
     getPathways(id).catch(() => []),
@@ -70,6 +72,8 @@ async function ProblemHub({
       proposalsAccepted: 0,
     })),
     getRecentActivityForProblem(id, { limit: 30 }).catch(() => []),
+    getProposalChainsForProblem(id).catch(() => []),
+    getAllFindingsForProblem(id).catch(() => []),
   ]);
 
   const pipelineState = computePipelineState({
@@ -83,6 +87,26 @@ async function ProblemHub({
     hasSynthesisContent: !!synthesis,
     synthesisRecommendsPathway: !!synthesis?.recommendedPathwayId,
   });
+
+  // Pick the recommended pathway for the consolidated view's Living Solution.
+  const recommendedPathway = synthesis?.recommendedPathwayId
+    ? pathways.find((p) => p.id === synthesis.recommendedPathwayId) ?? null
+    : pathways.find((p) => p.status === "accepted") ?? null;
+
+  // Human-readable status string for the top-left banner.
+  const statusText = (() => {
+    switch (pipelineState.stages.find((s) => s.status === "active")?.key) {
+      case "subProblems": return "Decomposing…";
+      case "research": return "Gathering findings…";
+      case "proposals": return "Drafting proposals…";
+      case "critique":
+      case "steelman":
+      case "verify": return "Council reviewing…";
+      case "synth": return "Synthesising…";
+      case "convergence": return "Composing pathway…";
+      default: return "Council in session";
+    }
+  })();
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-10">
@@ -124,8 +148,37 @@ async function ProblemHub({
         </aside>
       </div>
 
-      {/* Quick-view flow popup — floating bottom-right, hover to reveal */}
-      <QuickViewFlow state={pipelineState} problemTitle={problem.title} />
+      {/* Consolidated view — floating bottom-right, click to open warm-paper overlay */}
+      <div className="fixed bottom-6 right-6 z-40 print:hidden">
+        <ConsolidatedView
+          trigger={
+            <>
+              <span aria-hidden className="inline-block size-2 rounded-full bg-amber-500" />
+              <span>Consolidated view</span>
+            </>
+          }
+          data={{
+            problemTitle: problem.title,
+            problemDescription: problem.description,
+            region: problem.region ?? null,
+            subProblems,
+            perspectives,
+            findings: allFindings,
+            proposalChains,
+            pathway: recommendedPathway
+              ? {
+                  label: recommendedPathway.label,
+                  description: recommendedPathway.description,
+                  recommendedForContext: recommendedPathway.recommendedForContext,
+                  proposalCount: recommendedPathway.proposals.length,
+                }
+              : null,
+            synthesisRecommendsPathway: !!synthesis?.recommendedPathwayId,
+            activityEvents,
+            statusText,
+          }}
+        />
+      </div>
     </main>
   );
 }
