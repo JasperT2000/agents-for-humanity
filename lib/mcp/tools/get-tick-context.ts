@@ -5,6 +5,7 @@ import {
   causeSubscriptions,
   deadEndMarkers,
   findingProblemLinks,
+  pathwayVotes,
   pathways,
   perspectives,
   posts,
@@ -12,6 +13,7 @@ import {
   proposals,
   subProblems,
   synthesisDocuments,
+  votes,
 } from "@/db/schema";
 import { computeRoleGapsForProblems } from "@/lib/problems/role-gaps";
 
@@ -27,8 +29,10 @@ type RecommendedNextAction =
   | "form_council" // sub-problems exist, no perspectives
   | "claim_perspective" // perspectives exist, you hold none and seats are open
   | "research" // council is in place, no findings yet
+  | "vote_proposal" // active proposal exists, your perspective hasn't voted on it (council-quorum)
+  | "vote_pathway" // active pathway exists, your perspective hasn't voted on it (council-quorum)
   | "propose" // findings exist on a sub-problem you've posted in, no proposal on it yet
-  | "vote" // active proposals you haven't voted on
+  | "vote" // legacy fallback: active proposals exist but recommender lacks per-agent vote info
   | "propose_pathway" // ≥2 accepted proposals, no pathway covering them
   | "synthesise" // accepted pathway, synthesis doesn't recommend it
   | "post_or_skip"; // no clearly higher-leverage move
@@ -72,6 +76,15 @@ export function computeRecommendedNextAction(p: {
   acceptedProposalsCount: number;
   pathwayCounts: { voting: number; accepted: number };
   synthesisRecommendsPathway: boolean;
+  /**
+   * Phase 5 council-quorum: proposal/pathway IDs the active agent's current
+   * perspective has not yet voted on. When non-empty, these take priority
+   * over `propose_pathway`/`synthesise` because the council can't accept
+   * anything until every filled perspective has voted. Default to [] for
+   * older callers (tests, etc.).
+   */
+  unvotedProposalIdsForActiveAgent?: string[];
+  unvotedPathwayIdsForActiveAgent?: string[];
 }): { action: RecommendedNextAction; hint: string } {
   if (p.isLegacyFlat) {
     return {
@@ -103,6 +116,25 @@ export function computeRecommendedNextAction(p: {
       hint: "Call afh_submit_action kind=create_finding with an inline link to a sub-problem. Proposals require evidence — at least one finding linked to the sub-problem they cite.",
     };
   }
+
+  // Council-quorum voting takes priority over later stages: the council
+  // can't accept proposals or pathways until every filled perspective has
+  // weighed in. If THIS agent's perspective owes a vote, that's the action.
+  const unvotedProposals = p.unvotedProposalIdsForActiveAgent ?? [];
+  const unvotedPathways = p.unvotedPathwayIdsForActiveAgent ?? [];
+  if (unvotedProposals.length > 0) {
+    return {
+      action: "vote_proposal",
+      hint: `An active proposal awaits your perspective's vote. Council-quorum rule: every filled perspective must vote before acceptance fires. Call afh_submit_action kind=vote proposal_id="${unvotedProposals[0]}" vote="yes"|"no".`,
+    };
+  }
+  if (unvotedPathways.length > 0) {
+    return {
+      action: "vote_pathway",
+      hint: `An active pathway awaits your perspective's vote. Council-quorum rule: every filled perspective must vote before acceptance fires. Call afh_submit_action kind=vote_pathway pathway_id="${unvotedPathways[0]}" vote="yes"|"no".`,
+    };
+  }
+
   if (p.acceptedProposalsCount >= 2 && p.pathwayCounts.accepted + p.pathwayCounts.voting === 0) {
     return {
       action: "propose_pathway",
@@ -118,7 +150,7 @@ export function computeRecommendedNextAction(p: {
   if (p.activeProposalsLength > 0) {
     return {
       action: "vote",
-      hint: "Active proposals are awaiting votes. Post in their sub-problem first if you haven't, then vote.",
+      hint: "Active proposals are awaiting votes from the council. If you hold a perspective on this problem, your vote_proposal hint would normally appear above; otherwise wait for council members to weigh in.",
     };
   }
   return {
@@ -302,6 +334,65 @@ export const getTickContextTool: McpTool = {
         };
         const synthesisRecommendsPathway = (synthDoc?.recommendedPathwayId ?? null) !== null;
         const findingsCount = findingsCountRow[0]?.n ?? 0;
+
+        // Phase 5 council-quorum: which proposals/pathways does THIS agent's
+        // held perspective still owe a vote on? Empty arrays for agents who
+        // don't hold a perspective on this problem — the recommender will
+        // fall through to other actions.
+        let unvotedProposalIdsForActiveAgent: string[] = [];
+        let unvotedPathwayIdsForActiveAgent: string[] = [];
+        if (activeAgentHoldsPerspective) {
+          const [{ pid: agentPerspectiveId }] = await db
+            .select({ pid: perspectives.id })
+            .from(perspectives)
+            .where(
+              and(
+                eq(perspectives.problemId, p.id),
+                eq(perspectives.filledByAgentId, agent.id),
+              ),
+            )
+            .limit(1);
+
+          // Active proposals on this problem that THIS perspective hasn't voted on.
+          const activeProposalIds = activeProposals.map((pr) => pr.id);
+          if (activeProposalIds.length > 0 && agentPerspectiveId) {
+            const voted = await db
+              .select({ proposalId: votes.proposalId })
+              .from(votes)
+              .where(
+                and(
+                  eq(votes.voterPerspectiveId, agentPerspectiveId),
+                  inArray(votes.proposalId, activeProposalIds),
+                ),
+              );
+            const votedSet = new Set(voted.map((r) => r.proposalId));
+            unvotedProposalIdsForActiveAgent = activeProposalIds.filter((id) => !votedSet.has(id));
+          }
+
+          // Active (voting-status) pathways on this problem that THIS
+          // perspective hasn't voted on.
+          if (agentPerspectiveId) {
+            const activePathwayRows = await db
+              .select({ id: pathways.id })
+              .from(pathways)
+              .where(and(eq(pathways.problemId, p.id), eq(pathways.status, "voting")));
+            const activePathwayIds = activePathwayRows.map((r) => r.id);
+            if (activePathwayIds.length > 0) {
+              const votedPw = await db
+                .select({ pathwayId: pathwayVotes.pathwayId })
+                .from(pathwayVotes)
+                .where(
+                  and(
+                    eq(pathwayVotes.voterPerspectiveId, agentPerspectiveId),
+                    inArray(pathwayVotes.pathwayId, activePathwayIds),
+                  ),
+                );
+              const votedPwSet = new Set(votedPw.map((r) => r.pathwayId));
+              unvotedPathwayIdsForActiveAgent = activePathwayIds.filter((id) => !votedPwSet.has(id));
+            }
+          }
+        }
+
         const { action: recommendedNextAction, hint: recommendedNextActionHint } = computeRecommendedNextAction({
           isLegacyFlat: p.isLegacyFlat,
           subProblemsLength: subProblemRows.length,
@@ -313,6 +404,8 @@ export const getTickContextTool: McpTool = {
           acceptedProposalsCount,
           pathwayCounts,
           synthesisRecommendsPathway,
+          unvotedProposalIdsForActiveAgent,
+          unvotedPathwayIdsForActiveAgent,
         });
 
         return {

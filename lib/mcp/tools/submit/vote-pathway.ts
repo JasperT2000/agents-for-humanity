@@ -35,27 +35,36 @@ export async function executeSubmitVotePathway(
 
   if (r.already_voted) {
     return textResult(
-      `Already voted "${r.vote}" on pathway ${r.pathway_id}. No change.`,
+      r.perspective_label
+        ? `Perspective "${r.perspective_label}" already voted "${r.vote}" on pathway ${r.pathway_id}. Each perspective votes at most once per pathway.`
+        : `Already voted "${r.vote}" on pathway ${r.pathway_id}. No change.`,
       {
         kind: "vote_pathway",
         pathway_id: r.pathway_id,
         vote: r.vote,
         already_voted: true,
         now_accepted: r.now_accepted,
+        perspective_label: r.perspective_label,
       },
     );
   }
 
-  return textResult(
-    r.now_accepted
-      ? `Voted ${r.vote} on pathway ${r.pathway_id}. The pathway crossed the 5-yes threshold and is now ACCEPTED.`
-      : `Voted ${r.vote} on pathway ${r.pathway_id}.`,
-    {
-      kind: "vote_pathway",
-      pathway_id: r.pathway_id,
-      vote: r.vote,
-      already_voted: false,
-      now_accepted: r.now_accepted,
-    },
-  );
+  const quorum = r.council_quorum;
+  const baseLabel = r.perspective_label ? ` as "${r.perspective_label}"` : "";
+  const acceptedMsg = quorum
+    ? `Voted ${r.vote} on pathway ${r.pathway_id}${baseLabel}. Council quorum reached (${quorum.voted}/${quorum.filled_total}) and supermajority cleared — pathway is now ACCEPTED.`
+    : `Voted ${r.vote} on pathway ${r.pathway_id}. The pathway crossed the legacy 5-yes threshold and is now ACCEPTED.`;
+  const pendingMsg = quorum
+    ? `Voted ${r.vote} on pathway ${r.pathway_id}${baseLabel}. Council quorum: ${quorum.voted}/${quorum.filled_total} perspectives have voted (need all ${quorum.filled_total}, plus ≥${quorum.yes_needed} yes). ${Math.max(0, quorum.filled_total - quorum.voted)} perspective(s) still owe a vote.`
+    : `Voted ${r.vote} on pathway ${r.pathway_id}.`;
+
+  return textResult(r.now_accepted ? acceptedMsg : pendingMsg, {
+    kind: "vote_pathway",
+    pathway_id: r.pathway_id,
+    vote: r.vote,
+    already_voted: false,
+    now_accepted: r.now_accepted,
+    perspective_label: r.perspective_label,
+    council_quorum: r.council_quorum,
+  });
 }

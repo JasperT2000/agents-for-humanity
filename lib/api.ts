@@ -3,7 +3,7 @@
  * Server-side only: queries Drizzle directly (no HTTP round-trip needed).
  */
 
-import { and, asc, count, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -14,6 +14,7 @@ import {
   findingProblemLinks,
   findings,
   pathwayProposals,
+  pathwayVotes,
   pathways,
   perspectives,
   posts,
@@ -23,6 +24,7 @@ import {
   synthesisDocuments,
   synthesisVersions,
   users,
+  votes,
 } from "@/db/schema";
 import { computeRoleGapsForProblem } from "@/lib/problems/role-gaps";
 import { synthesisEditorCount } from "@/lib/synthesis/editor-count";
@@ -33,11 +35,13 @@ import type {
   Agent,
   AgentProfile,
   Cause,
+  CouncilVote,
   DeadEndMarker,
   FindingConfidence,
   FindingSummary,
   PerspectiveStatus,
   PerspectiveSummary,
+  PerspectiveVoteSummary,
   PlatformStats,
   Post,
   Problem,
@@ -1503,21 +1507,74 @@ export async function getProposalChainsForProblem(
     };
   }
 
-  return proposalRows.map((p): ProposalChain => ({
-    proposalId: p.id,
-    subProblemId: p.subProblemId ?? "",
-    summary: p.summary,
-    fullProposal: p.fullProposal,
-    status: p.status as ProposalStatus,
-    voteCountYes: p.voteCountYes,
-    voteCountNo: p.voteCountNo,
-    createdByDisplayName: agentName.get(p.createdByAgentId) ?? "Unknown agent",
-    citedFindingIds: p.citedFindingIds ?? [],
-    critique: stageFor(p.subProblemId, "critic"),
-    steelman: stageFor(p.subProblemId, "steelmanner"),
-    verify: stageFor(p.subProblemId, "citer"),
-    synth: stageFor(p.subProblemId, "synthesiser"),
-  }));
+  // Phase 5 council-quorum: per-proposal per-perspective vote tally. Fetch
+  // all filled perspectives on the problem + every vote-with-perspective on
+  // the proposals in one query each, then bucket client-side.
+  const filledPerspectiveRows = await db
+    .select({
+      id: perspectives.id,
+      label: perspectives.label,
+      status: perspectives.status,
+    })
+    .from(perspectives)
+    .where(eq(perspectives.problemId, problemId));
+  const filledPerspectives = filledPerspectiveRows
+    .filter((r) => r.status === "filled")
+    .map((r) => ({ id: r.id, label: r.label, status: r.status as PerspectiveStatus }));
+
+  const proposalIds = proposalRows.map((p) => p.id);
+  const voteRows = proposalIds.length > 0
+    ? await db
+        .select({
+          proposalId: votes.proposalId,
+          voterPerspectiveId: votes.voterPerspectiveId,
+          vote: votes.vote,
+        })
+        .from(votes)
+        .where(
+          and(
+            inArray(votes.proposalId, proposalIds),
+            // Only perspective-attributed votes feed council-vote display.
+            // Legacy votes (NULL perspective) show up only in the rollup counts.
+            isNotNull(votes.voterPerspectiveId),
+          ),
+        )
+    : [];
+
+  // proposalId -> perspectiveId -> "yes" | "no"
+  const votesByProposal = new Map<string, Map<string, CouncilVote>>();
+  for (const v of voteRows) {
+    if (!v.voterPerspectiveId) continue;
+    const inner = votesByProposal.get(v.proposalId) ?? new Map<string, CouncilVote>();
+    inner.set(v.voterPerspectiveId, v.vote as CouncilVote);
+    votesByProposal.set(v.proposalId, inner);
+  }
+
+  return proposalRows.map((p): ProposalChain => {
+    const innerVotes = votesByProposal.get(p.id) ?? new Map<string, CouncilVote>();
+    const councilVotes: PerspectiveVoteSummary[] = filledPerspectives.map((per) => ({
+      perspectiveId: per.id,
+      perspectiveLabel: per.label,
+      perspectiveStatus: per.status,
+      vote: innerVotes.get(per.id) ?? null,
+    }));
+    return {
+      proposalId: p.id,
+      subProblemId: p.subProblemId ?? "",
+      summary: p.summary,
+      fullProposal: p.fullProposal,
+      status: p.status as ProposalStatus,
+      voteCountYes: p.voteCountYes,
+      voteCountNo: p.voteCountNo,
+      createdByDisplayName: agentName.get(p.createdByAgentId) ?? "Unknown agent",
+      citedFindingIds: p.citedFindingIds ?? [],
+      critique: stageFor(p.subProblemId, "critic"),
+      steelman: stageFor(p.subProblemId, "steelmanner"),
+      verify: stageFor(p.subProblemId, "citer"),
+      synth: stageFor(p.subProblemId, "synthesiser"),
+      councilVotes,
+    };
+  });
 }
 
 /**

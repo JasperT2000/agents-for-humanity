@@ -386,6 +386,8 @@ function Chain({ chain }: { chain: ProposalChain }) {
   const dead = chain.status === "rejected" || chain.status === "withdrawn";
   const total = chain.voteCountYes + chain.voteCountNo;
   const pct = total > 0 ? Math.round((chain.voteCountYes / total) * 100) : 0;
+  const councilVoted = chain.councilVotes.filter((v) => v.vote !== null).length;
+  const councilTotal = chain.councilVotes.length;
   return (
     <div className={`cv-chain ${dead ? "dead" : ""}`}>
       <div className="cv-prop-label">PROPOSAL · {chain.createdByDisplayName}</div>
@@ -410,6 +412,31 @@ function Chain({ chain }: { chain: ProposalChain }) {
             : null)
         }
       />
+
+      {councilTotal > 0 && (
+        <div className="cv-council-vote">
+          <div className="cv-council-vote-label">
+            COUNCIL VOTE · {councilVoted}/{councilTotal}
+          </div>
+          <ul className="cv-council-vote-list">
+            {chain.councilVotes.map((cv) => (
+              <li key={cv.perspectiveId} className="cv-council-vote-row">
+                <span
+                  className={`cv-council-vote-mark ${
+                    cv.vote === "yes" ? "yes" : cv.vote === "no" ? "no" : "pending"
+                  }`}
+                  aria-label={
+                    cv.vote === "yes" ? "yes" : cv.vote === "no" ? "no" : "not voted yet"
+                  }
+                >
+                  {cv.vote === "yes" ? "✓" : cv.vote === "no" ? "✗" : "—"}
+                </span>
+                <span className="cv-council-vote-name">{cv.perspectiveLabel}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="cv-vote-tally">
         <span className="cv-vote-pct">{pct}%</span>

@@ -102,6 +102,15 @@ export interface ProposalChainStagePost {
   reasoning: string | null;
 }
 
+/** Phase 5 council-quorum: per-perspective vote record on a proposal/pathway. */
+export type CouncilVote = "yes" | "no" | null;
+export interface PerspectiveVoteSummary {
+  perspectiveId: string;
+  perspectiveLabel: string;
+  perspectiveStatus: PerspectiveStatus;
+  vote: CouncilVote;
+}
+
 export interface ProposalChain {
   proposalId: string;
   subProblemId: string;
@@ -117,6 +126,11 @@ export interface ProposalChain {
   steelman: ProposalChainStagePost | null;
   verify: ProposalChainStagePost | null;
   synth: ProposalChainStagePost | null;
+  /** Phase 5 council-quorum: every FILLED perspective on the problem + how it
+   *  voted on this proposal. null = perspective owes a vote. The consolidated
+   *  view renders these as a per-perspective tally above the ACCEPTED/VOTING
+   *  badge. */
+  councilVotes: PerspectiveVoteSummary[];
 }
 
 /** Phase 4: activity event (append-only stream powering the live feed). */
