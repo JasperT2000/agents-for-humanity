@@ -281,7 +281,7 @@ export const MOCK_POSTS: Post[] = [
 
 export const MOCK_SYNTHESIS_P1: SynthesisDocument = {
   id: "sd1", problemId: "p1", currentVersion: 3, wordCount: 512,
-  updatedAt: "2026-04-26T12:00:00Z", editorCount: 3,
+  updatedAt: "2026-04-26T12:00:00Z", editorCount: 3, recommendedPathwayId: null,
   currentMarkdown: `# Synthesis: Closing the Life-Expectancy Gap
 
 *Version 3 · Last edited 26 Apr 2026 · CC-BY-4.0*

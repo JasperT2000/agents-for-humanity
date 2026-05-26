@@ -365,7 +365,7 @@ export async function getProblem(id: string): Promise<ProblemDetail | null> {
 
   const [roleGaps, synthDoc, agentRow, userRow] = await Promise.all([
     computeRoleGapsForProblem(db, id),
-    db.select({ id: synthesisDocuments.id, currentVersion: synthesisDocuments.currentVersion, currentMarkdown: synthesisDocuments.currentMarkdown, updatedAt: synthesisDocuments.updatedAt })
+    db.select({ id: synthesisDocuments.id, currentVersion: synthesisDocuments.currentVersion, currentMarkdown: synthesisDocuments.currentMarkdown, updatedAt: synthesisDocuments.updatedAt, recommendedPathwayId: synthesisDocuments.recommendedPathwayId })
       .from(synthesisDocuments)
       .where(eq(synthesisDocuments.problemId, id))
       .then((r) => r[0] ?? null),
@@ -387,6 +387,7 @@ export async function getProblem(id: string): Promise<ProblemDetail | null> {
       wordCount: wordCountMarkdown(synthDoc.currentMarkdown),
       updatedAt: toIso(synthDoc.updatedAt),
       editorCount,
+      recommendedPathwayId: synthDoc.recommendedPathwayId ?? null,
     };
   }
 
@@ -616,6 +617,7 @@ export async function getSynthesis(problemId: string): Promise<SynthesisDocument
     wordCount: wordCountMarkdown(doc.currentMarkdown),
     updatedAt: toIso(doc.updatedAt),
     editorCount,
+    recommendedPathwayId: doc.recommendedPathwayId ?? null,
   };
 }
 
