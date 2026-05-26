@@ -2,6 +2,7 @@ import { and, count, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { posts, problems, proposals, votes } from "@/db/schema";
+import { recordActivity } from "@/lib/activity/record";
 import { checkVoteRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 
@@ -120,6 +121,21 @@ export async function executeSubmitVote(
       nowAccepted = true;
     }
   });
+
+  if (nowAccepted) {
+    // Activity feed (Phase 5 follow-up): mark proposal.accepted so the right-rail
+    // feed surfaces convergence events. System actor — voters are recorded
+    // separately if/when we add a `proposal.vote` event (skipped today to keep
+    // the feed signal-to-noise high).
+    await recordActivity({
+      eventType: "proposal.accepted",
+      actor: { type: "system" },
+      problemId: proposal.problemId,
+      subProblemId: proposal.subProblemId,
+      targetId: proposalId,
+      summary: `Proposal accepted (crossed 5-yes threshold) — eligible for pathway composition`,
+    });
+  }
 
   return textResult(
     nowAccepted

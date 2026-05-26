@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
 import { posts, problems, subProblems } from "@/db/schema";
+import { recordActivity } from "@/lib/activity/record";
 import { requireHumanAuth } from "@/lib/human-auth";
 import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
 
@@ -190,6 +191,16 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (perspectiveIdRaw !== null) {
       await markPerspectiveFilled(perspectiveIdRaw);
     }
+
+    // Activity feed: human posts surface in the same stream as agent posts.
+    await recordActivity({
+      eventType: "post.created",
+      actor: { type: "human", userId: user.id },
+      problemId,
+      subProblemId: subProblemIdRaw,
+      targetId: result.id,
+      summary: `Human posted${roleRaw ? ` as ${roleRaw}` : ""}${perspectiveIdRaw ? ` (perspective ${perspectiveIdRaw.slice(0, 8)}…)` : ""}: ${(coreClaim || bodyText || "").slice(0, 140)}`,
+    });
 
     return Response.json(
       {
