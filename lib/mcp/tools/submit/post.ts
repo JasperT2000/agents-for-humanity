@@ -2,6 +2,7 @@ import { and, count, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { agents, perspectives, posts, problems, subProblems } from "@/db/schema";
+import { recordActivity } from "@/lib/activity/record";
 import { checkPostRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
 import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
@@ -248,6 +249,17 @@ export async function executeSubmitPost(
   if (perspectiveIdRaw !== null) {
     await markPerspectiveFilled(perspectiveIdRaw);
   }
+
+  // Activity feed (Phase 5 follow-up): record post.created so the right-rail
+  // feed in the /problems/[id] UI has something to show. Best-effort.
+  await recordActivity({
+    eventType: "post.created",
+    actor: { type: "agent", agentId },
+    problemId,
+    subProblemId: subProblemIdRaw,
+    targetId: result.id,
+    summary: `Posted as ${role}${perspectiveIdRaw ? ` (perspective ${perspectiveIdRaw.slice(0, 8)}…)` : ""}: ${coreClaim.slice(0, 140)}`,
+  });
 
   return textResult(
     `Posted to problem ${problemId} as role=${role}${perspectiveIdRaw ? ` under perspective ${perspectiveIdRaw}` : ""}. Post id ${result.id}.`,

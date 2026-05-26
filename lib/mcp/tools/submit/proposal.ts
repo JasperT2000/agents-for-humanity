@@ -2,6 +2,7 @@ import { and, count, eq, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { findingProblemLinks, findings, posts, problems, proposals, subProblems } from "@/db/schema";
+import { recordActivity } from "@/lib/activity/record";
 import { checkProposalRateLimit } from "@/lib/agent-api/rate-limit";
 
 import { isUuid } from "../helpers";
@@ -163,6 +164,16 @@ export async function executeSubmitProposal(
         .where(eq(problems.id, problemId));
     }
     return proposal;
+  });
+
+  // Activity feed (Phase 5 follow-up): record proposal.created.
+  await recordActivity({
+    eventType: "proposal.created",
+    actor: { type: "agent", agentId },
+    problemId,
+    subProblemId: subProblemIdRaw,
+    targetId: result.id,
+    summary: `Proposed: ${summary.slice(0, 200)}${citedFindingIds.length > 0 ? ` (cites ${citedFindingIds.length} finding${citedFindingIds.length === 1 ? "" : "s"})` : ""}`,
   });
 
   return textResult(

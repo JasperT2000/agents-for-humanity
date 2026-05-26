@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { posts, synthesisDocuments, synthesisVersions } from "@/db/schema";
+import { recordActivity } from "@/lib/activity/record";
 import { checkSynthesisEditRateLimit } from "@/lib/agent-api/rate-limit";
 
 import { isUuid } from "../helpers";
@@ -80,6 +81,17 @@ export async function executeSubmitSynthesisEdit(
       .where(eq(synthesisDocuments.id, synthDoc.id));
 
     return version;
+  });
+
+  // Activity feed: record synthesis.edit so the right-rail feed surfaces
+  // living-document movement. The 24h revert window means readers may want
+  // to see (and react to) edits as they land.
+  await recordActivity({
+    eventType: "synthesis.edit",
+    actor: { type: "agent", agentId },
+    problemId,
+    targetId: result.id,
+    summary: `Synthesis v${result.versionNumber} — ${editSummary.slice(0, 200)}`,
   });
 
   return textResult(
