@@ -3,10 +3,11 @@
  * Server-side only: queries Drizzle directly (no HTTP round-trip needed).
  */
 
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
+  activityEvents,
   agents,
   causes,
   deadEndMarkers,
@@ -27,6 +28,8 @@ import { computeRoleGapsForProblem } from "@/lib/problems/role-gaps";
 import { synthesisEditorCount } from "@/lib/synthesis/editor-count";
 import { wordCountMarkdown } from "@/lib/synthesis/word-count";
 import type {
+  ActivityActorType,
+  ActivityEventSummary,
   Agent,
   AgentProfile,
   Cause,
@@ -1383,5 +1386,99 @@ export async function getFindingsForSubProblem(
       if (u) finding.createdByUser = { id: u.id, displayName: u.displayName, xHandle: u.xHandle };
     }
     return finding;
+  });
+}
+
+// ── Activity feed (PR-5.B4) ──────────────────────────────────────────────────
+
+/**
+ * Fetch recent activity events for a problem, resolving the actor's display
+ * name so the feed UI doesn't have to chase down agents/users separately.
+ * Newest first. `sinceIso` filters strictly newer than the given timestamp.
+ */
+export async function getRecentActivityForProblem(
+  problemId: string,
+  opts: { sinceIso?: string | null; limit?: number } = {},
+): Promise<ActivityEventSummary[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 30));
+  const clauses = [eq(activityEvents.problemId, problemId)];
+  if (opts.sinceIso) {
+    const ts = new Date(opts.sinceIso);
+    if (!Number.isNaN(ts.getTime())) {
+      // strictly newer than
+      clauses.push(gt(activityEvents.createdAt, ts));
+    }
+  }
+
+  const rows = await db
+    .select({
+      id: activityEvents.id,
+      eventType: activityEvents.eventType,
+      actorType: activityEvents.actorType,
+      actorAgentId: activityEvents.actorAgentId,
+      actorUserId: activityEvents.actorUserId,
+      problemId: activityEvents.problemId,
+      subProblemId: activityEvents.subProblemId,
+      targetId: activityEvents.targetId,
+      summary: activityEvents.summary,
+      createdAt: activityEvents.createdAt,
+    })
+    .from(activityEvents)
+    .where(and(...clauses))
+    .orderBy(desc(activityEvents.createdAt))
+    .limit(limit);
+
+  if (rows.length === 0) return [];
+
+  const agentIds = [...new Set(rows.map((r) => r.actorAgentId).filter(Boolean) as string[])];
+  const userIds = [...new Set(rows.map((r) => r.actorUserId).filter(Boolean) as string[])];
+
+  const [agentRows, userRows] = await Promise.all([
+    agentIds.length > 0
+      ? db
+          .select({ id: agents.id, displayName: agents.displayName })
+          .from(agents)
+          .where(inArray(agents.id, agentIds))
+      : Promise.resolve([]),
+    userIds.length > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
+  ]);
+
+  const agentMap = new Map(agentRows.map((a) => [a.id, a.displayName]));
+  const userMap = new Map(userRows.map((u) => [u.id, u.displayName]));
+
+  return rows.map((r): ActivityEventSummary => {
+    const actor =
+      r.actorType === "agent" && r.actorAgentId
+        ? {
+            type: "agent" as const,
+            id: r.actorAgentId,
+            displayName: agentMap.get(r.actorAgentId) ?? "Unknown agent",
+          }
+        : r.actorType === "human" && r.actorUserId
+          ? {
+              type: "human" as const,
+              id: r.actorUserId,
+              displayName: userMap.get(r.actorUserId) ?? "Unknown human",
+            }
+          : { type: "system" as const };
+    return {
+      id: r.id,
+      eventType: r.eventType,
+      actorType: r.actorType as ActivityActorType,
+      actor,
+      problemId: r.problemId,
+      subProblemId: r.subProblemId,
+      targetId: r.targetId,
+      summary: r.summary,
+      createdAt: toIso(r.createdAt),
+    };
   });
 }
