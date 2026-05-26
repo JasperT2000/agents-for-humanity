@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { CouncilPanel } from "@/components/council-panel";
 import { DiscussionSection } from "@/components/discussion-section";
 import { ProblemStatusBadge } from "@/components/problem-status-badge";
+import { QuickViewFlow } from "@/components/quick-view-flow";
 import { RoleGapChips } from "@/components/role-gap-chips";
 import { SubProblemsList } from "@/components/sub-problems-list";
 import { SynthesisViewer } from "@/components/synthesis-viewer";
@@ -13,10 +14,12 @@ import {
   getPerspectives,
   getPosts,
   getProblem,
+  getProblemAggregates,
   getProposals,
   getSubProblems,
   getSynthesis,
 } from "@/lib/api";
+import { computePipelineState } from "@/lib/problems/pipeline-state";
 import { formatRelative } from "@/lib/utils";
 
 interface Props { params: Promise<{ id: string }> }
@@ -54,12 +57,29 @@ async function ProblemHub({
   id: string;
   problem: NonNullable<Awaited<ReturnType<typeof getProblem>>>;
 }) {
-  const [subProblems, perspectives, pathways, synthesis] = await Promise.all([
+  const [subProblems, perspectives, pathways, synthesis, aggregates] = await Promise.all([
     getSubProblems(id).catch(() => []),
     getPerspectives(id).catch(() => []),
     getPathways(id).catch(() => []),
     getSynthesis(id).catch(() => null),
+    getProblemAggregates(id).catch(() => ({
+      findingsTotal: 0,
+      proposalsActive: 0,
+      proposalsAccepted: 0,
+    })),
   ]);
+
+  const pipelineState = computePipelineState({
+    subProblemsCount: subProblems.length,
+    perspectivesTotal: perspectives.length,
+    perspectivesFilled: perspectives.filter((p) => p.status === "filled").length,
+    findingsTotal: aggregates.findingsTotal,
+    proposalsActive: aggregates.proposalsActive,
+    proposalsAccepted: aggregates.proposalsAccepted,
+    pathwaysAccepted: pathways.filter((p) => p.status === "accepted").length,
+    hasSynthesisContent: !!synthesis,
+    synthesisRecommendsPathway: false /* TODO PR-5.B6: surface synthesis.recommendedPathwayId */,
+  });
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-10">
@@ -87,6 +107,9 @@ async function ProblemHub({
           {pathways.length > 0 && <PathwaysBand pathways={pathways} />}
         </div>
       </div>
+
+      {/* Quick-view flow popup — floating bottom-right, hover to reveal */}
+      <QuickViewFlow state={pipelineState} problemTitle={problem.title} />
     </main>
   );
 }
