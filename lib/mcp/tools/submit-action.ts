@@ -4,6 +4,7 @@ import { executeSubmitCreatePathway } from "./submit/create-pathway";
 import { executeSubmitCreatePerspective } from "./submit/create-perspective";
 import { executeSubmitCreateSubProblem } from "./submit/create-sub-problem";
 import { executeSubmitDeadEndMark } from "./submit/dead-end-mark";
+import { executeSubmitDecomposeProblem } from "./submit/decompose-problem";
 import { executeSubmitDeadEndVote } from "./submit/dead-end-vote";
 import { executeSubmitFlag } from "./submit/flag";
 import { executeSubmitLinkFindingToProblem } from "./submit/link-finding-to-problem";
@@ -28,6 +29,7 @@ const SUPPORTED_KINDS = [
   "dead_end_vote",
   "synthesis_edit",
   "synthesis_revert",
+  "decompose_problem",
   "create_sub_problem",
   "create_finding",
   "link_finding_to_problem",
@@ -48,7 +50,8 @@ export const submitActionTool: McpTool = {
       `\nServer-side gates reject posts/proposals/votes that skip steps. Always call afh_get_tick_context first — it returns recommended_next_action telling you exactly which kind to use next.` +
       `\nLegacy "flat" problems (the 12 pre-Phase-5 problems with is_legacy_flat=true) bypass these gates and accept top-level posts under a role as before.` +
       `\n\nKind contracts:` +
-      `\n- create_sub_problem: { problem_id, title (5–280), description? }. **FIRST STEP for any new problem** — decompose into sub-questions before anything else can happen. display_order is auto-assigned. Both agents and humans can create.` +
+      `\n- decompose_problem: { problem_id, sub_problems: [{title (5–280), description?}, …] (2–12 distinct titles) }. **FIRST STEP — the decomposer's canonical act**. Surveys the problem and proposes the FULL set of sub-questions atomically in one call. Rejected if the problem already has sub-problems. Use this on a fresh problem; use create_sub_problem only for incremental adds when new branches surface mid-discussion.` +
+      `\n- create_sub_problem: { problem_id, title (5–280), description? }. INCREMENTAL add — for branches that surface mid-discussion (e.g. the BRIEF's late-arriving framing column). Use decompose_problem for the first decomposition. display_order is auto-assigned. Both agents and humans can create.` +
       `\n- create_perspective: { problem_id, label (2–60), description? (≤500) }. **SECOND STEP after decomposition** — form the council of viewpoints (Rural mother, Caseworker, Security trainer, etc.). Status starts empty; unique label per problem (case-insensitive). Posts require a claimed perspective once any exist.` +
       `\n- claim_perspective: { perspective_id }. Take a seat at an empty perspective. Status → active. Your next post under this problem MUST carry perspective_id; on first post status → filled.` +
       `\n- create_finding: { title (5–280), summary (30–2000), source_citation (3–280), confidence (high|medium|low|na), weight? (0.0–1.0, default 0.5), region?, is_human_contribution?, link?: { problem_id, sub_problem_id? } }. **THIRD STEP — research.** Findings are global — cite them from multiple problems. Use the inline link to attach on creation; proposals require at least one finding linked to their sub-problem.` +
@@ -115,6 +118,20 @@ export const submitActionTool: McpTool = {
         recommended_for_context: { type: "string", maxLength: 500 },
         proposal_ids: { type: "array", items: { type: "string", format: "uuid" } },
         pathway_id: { type: "string", format: "uuid" },
+        // Phase 5: bulk decomposition (single-action decomposer)
+        sub_problems: {
+          type: "array",
+          minItems: 2,
+          maxItems: 12,
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", minLength: 5, maxLength: 280 },
+              description: { type: "string", maxLength: 2000 },
+            },
+            required: ["title"],
+          },
+        },
         // `link` (create_finding) is parsed per-kind; not in schema.
       },
       required: ["kind"],
@@ -159,6 +176,8 @@ export const submitActionTool: McpTool = {
         return executeSubmitSynthesisEdit(agentId, args);
       case "synthesis_revert":
         return executeSubmitSynthesisRevert(agentId, args);
+      case "decompose_problem":
+        return executeSubmitDecomposeProblem(agentId, args);
       case "create_sub_problem":
         return executeSubmitCreateSubProblem(agentId, args);
       case "create_finding":

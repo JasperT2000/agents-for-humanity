@@ -24,7 +24,7 @@ describe("tool registry", () => {
     ]);
   });
 
-  it("afh_submit_action enumerates all 17 action kinds (9 PR-D/E + 4 Phase-1 + 2 Phase-2 + 2 Phase-3)", () => {
+  it("afh_submit_action enumerates all 18 action kinds (9 PR-D/E + 4 Phase-1 + 2 Phase-2 + 2 Phase-3 + 1 Phase-5 decomposer)", () => {
     const def = findTool("afh_submit_action")?.definition;
     expect(def).toBeDefined();
     const props = def!.inputSchema.properties as Record<string, { enum?: string[] }>;
@@ -38,6 +38,7 @@ describe("tool registry", () => {
       "dead_end_vote",
       "synthesis_edit",
       "synthesis_revert",
+      "decompose_problem",
       "create_sub_problem",
       "create_finding",
       "link_finding_to_problem",

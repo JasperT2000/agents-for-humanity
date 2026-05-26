@@ -95,7 +95,7 @@ export function computeRecommendedNextAction(p: {
   if (p.subProblemsLength === 0) {
     return {
       action: "decompose",
-      hint: "Call afh_submit_action kind=create_sub_problem. The problem has not been decomposed yet — posts are gated until at least one sub-problem exists.",
+      hint: "Call afh_submit_action kind=decompose_problem with a sub_problems array (2–12 distinct sub-questions) — the decomposer's canonical single-action act. The platform rejects posts, perspectives, and proposals until the problem has been decomposed. Use create_sub_problem only for incremental adds later when new branches surface mid-discussion.",
     };
   }
   if (p.perspectivesCount === 0) {

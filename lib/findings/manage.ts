@@ -27,6 +27,11 @@ export type FindingEdgeType = (typeof FINDING_EDGE_TYPES)[number];
 
 export const SUB_PROBLEM_TITLE_MIN = 5;
 export const SUB_PROBLEM_TITLE_MAX = 280;
+/** Bulk-decompose action: minimum + maximum sub-problems an agent can create
+ *  in a single decompose_problem call. Floor is 2 because a 1-sub-problem
+ *  decomposition isn't really a decomposition; ceiling prevents spam. */
+export const DECOMPOSE_MIN_SUB_PROBLEMS = 2;
+export const DECOMPOSE_MAX_SUB_PROBLEMS = 12;
 export const FINDING_TITLE_MIN = 5;
 export const FINDING_TITLE_MAX = 280;
 export const FINDING_SUMMARY_MIN = 30;
@@ -111,6 +116,139 @@ export async function createSubProblem(params: {
   });
 
   return { sub_problem: row };
+}
+
+/**
+ * Phase 5: the decomposer's single-action take. An agent acting in the
+ * decomposer role surveys the problem and proposes the FULL set of sub-
+ * questions in one atomic act. Validates input, inserts every row in a
+ * single transaction (so a malformed entry rolls the whole decomposition
+ * back), and records ONE activity event for the whole decomposition.
+ *
+ * If the problem already has sub-problems, this is rejected — decompose is
+ * a "first act" by design; later additions should use createSubProblem
+ * (for incremental, mid-discussion contributions like the BRIEF's late-
+ * arriving framing column).
+ */
+export async function decomposeProblem(params: {
+  problemId: string;
+  subProblems: Array<{ title: string; description?: string }>;
+  /** Agent OR user, exactly one. */
+  createdByAgentId?: string;
+  createdByUserId?: string;
+}): Promise<
+  | {
+      sub_problems: Array<{
+        id: string;
+        title: string;
+        displayOrder: number;
+        createdAt: Date;
+      }>;
+    }
+  | { error: ManageError; detail?: string }
+> {
+  if (!isUuid(params.problemId)) return { error: "INVALID_INPUT", detail: "problem_id must be a UUID" };
+  if (!Array.isArray(params.subProblems)) {
+    return { error: "INVALID_INPUT", detail: "sub_problems must be an array of {title, description?}" };
+  }
+  if (params.subProblems.length < DECOMPOSE_MIN_SUB_PROBLEMS) {
+    return {
+      error: "INVALID_INPUT",
+      detail: `decompose requires ≥${DECOMPOSE_MIN_SUB_PROBLEMS} sub-problems (got ${params.subProblems.length}); use create_sub_problem for incremental adds`,
+    };
+  }
+  if (params.subProblems.length > DECOMPOSE_MAX_SUB_PROBLEMS) {
+    return {
+      error: "INVALID_INPUT",
+      detail: `decompose allows at most ${DECOMPOSE_MAX_SUB_PROBLEMS} sub-problems per call (got ${params.subProblems.length})`,
+    };
+  }
+
+  // Per-entry validation + trim
+  const normalised: Array<{ title: string; description: string | null }> = [];
+  const seenLowercase = new Set<string>();
+  for (let i = 0; i < params.subProblems.length; i++) {
+    const raw = params.subProblems[i];
+    const title = (raw?.title ?? "").trim();
+    if (title.length < SUB_PROBLEM_TITLE_MIN || title.length > SUB_PROBLEM_TITLE_MAX) {
+      return {
+        error: "INVALID_INPUT",
+        detail: `sub_problems[${i}].title must be ${SUB_PROBLEM_TITLE_MIN}–${SUB_PROBLEM_TITLE_MAX} chars (got ${title.length})`,
+      };
+    }
+    const lower = title.toLowerCase();
+    if (seenLowercase.has(lower)) {
+      return {
+        error: "INVALID_INPUT",
+        detail: `sub_problems[${i}].title duplicates an earlier entry (case-insensitive) — each sub-question must be distinct`,
+      };
+    }
+    seenLowercase.add(lower);
+    const description = raw?.description?.trim() || null;
+    normalised.push({ title, description });
+  }
+
+  const hasAgent = typeof params.createdByAgentId === "string";
+  const hasUser = typeof params.createdByUserId === "string";
+  if (hasAgent === hasUser) return { error: "INVALID_INPUT", detail: "exactly one of createdByAgentId / createdByUserId" };
+
+  const db = getDb();
+  if (!db) return { error: "DATABASE_UNAVAILABLE" };
+
+  const problem = await db.query.problems.findFirst({
+    where: eq(problems.id, params.problemId),
+    columns: { id: true },
+  });
+  if (!problem) return { error: "PROBLEM_NOT_FOUND" };
+
+  // Decompose is a first act: refuse if the problem already has sub-problems.
+  // Later additions should go through createSubProblem (single, incremental).
+  const [{ existing }] = await db
+    .select({ existing: sql<number>`count(*)` })
+    .from(subProblems)
+    .where(eq(subProblems.problemId, params.problemId));
+  if (Number(existing) > 0) {
+    return {
+      error: "INVALID_INPUT",
+      detail: `Problem already has ${existing} sub-problem(s). Use create_sub_problem for incremental additions; decompose_problem is the first-act decomposition.`,
+    };
+  }
+
+  // Insert all in one transaction; sequential display_order 0..N-1.
+  const inserted = await db.transaction(async (tx) => {
+    const rows = await tx
+      .insert(subProblems)
+      .values(
+        normalised.map((sp, idx) => ({
+          problemId: params.problemId,
+          title: sp.title,
+          description: sp.description,
+          displayOrder: idx,
+          createdByAgentId: params.createdByAgentId ?? null,
+          createdByUserId: params.createdByUserId ?? null,
+        })),
+      )
+      .returning({
+        id: subProblems.id,
+        title: subProblems.title,
+        displayOrder: subProblems.displayOrder,
+        createdAt: subProblems.createdAt,
+      });
+    return rows;
+  });
+
+  // ONE activity event for the whole decomposition (not one per sub-problem).
+  await recordActivity({
+    eventType: "problem.decomposed",
+    actor: params.createdByAgentId
+      ? { type: "agent", agentId: params.createdByAgentId }
+      : { type: "human", userId: params.createdByUserId! },
+    problemId: params.problemId,
+    targetId: params.problemId,
+    summary: `Problem decomposed into ${inserted.length} sub-question${inserted.length === 1 ? "" : "s"}: ${inserted.map((r) => r.title.slice(0, 60)).join(" · ")}`,
+  });
+
+  return { sub_problems: inserted };
 }
 
 export type ListedSubProblem = {
