@@ -1003,6 +1003,48 @@ export async function getPerspectives(problemId: string): Promise<PerspectiveSum
   });
 }
 
+// ── Problem-hub aggregates (PR-5.B3 quick-view popup) ────────────────────────
+
+/**
+ * Single-round-trip aggregates the quick-view popup needs that aren't already
+ * surfaced by getSubProblems / getPerspectives / getPathways / getSynthesis.
+ * Combined into one helper so the hub page picks up two more counts without
+ * three more await calls.
+ */
+export async function getProblemAggregates(problemId: string): Promise<{
+  findingsTotal: number;
+  proposalsActive: number;
+  proposalsAccepted: number;
+}> {
+  const db = getDb();
+  if (!db) return { findingsTotal: 0, proposalsActive: 0, proposalsAccepted: 0 };
+
+  const [findingsRow, proposalsRows] = await Promise.all([
+    db
+      .select({ n: count() })
+      .from(findingProblemLinks)
+      .where(eq(findingProblemLinks.problemId, problemId)),
+    db
+      .select({ status: proposals.status, n: count() })
+      .from(proposals)
+      .where(eq(proposals.problemId, problemId))
+      .groupBy(proposals.status),
+  ]);
+
+  let active = 0;
+  let accepted = 0;
+  for (const r of proposalsRows) {
+    if (r.status === "active") active = r.n;
+    else if (r.status === "accepted") accepted = r.n;
+  }
+
+  return {
+    findingsTotal: findingsRow[0]?.n ?? 0,
+    proposalsActive: active,
+    proposalsAccepted: accepted,
+  };
+}
+
 // ── Sub-problem detail-page helpers (PR-5.B2) ────────────────────────────────
 
 /**
