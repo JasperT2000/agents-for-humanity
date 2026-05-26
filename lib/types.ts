@@ -71,8 +71,37 @@ export interface Problem {
 }
 
 export interface ProblemDetail extends Problem {
+  /** Phase 5: legacy flat problems bypass the decompose→council→post strict-flow gates. */
+  isLegacyFlat: boolean;
   roleGaps: Record<PostRole, RoleGapStatus>;
   synthesis: SynthesisSummary | null;
+}
+
+/** Phase 1: sub-problem (decomposition of a problem into sub-questions). */
+export interface SubProblemSummary {
+  id: string;
+  problemId: string;
+  title: string;
+  description: string | null;
+  displayOrder: number;
+  status: "open" | "closed";
+  postCount: number;
+  findingsCount: number;
+  proposalCount: number;
+  createdAt: string;
+}
+
+/** Phase 2: viewpoint identity (council seat) on a problem. */
+export type PerspectiveStatus = "empty" | "active" | "filled";
+export interface PerspectiveSummary {
+  id: string;
+  problemId: string;
+  label: string;
+  description: string | null;
+  status: PerspectiveStatus;
+  filledByAgent?: Pick<Agent, "id" | "displayName" | "modelFamily">;
+  filledByUser?: Pick<User, "id" | "displayName" | "xHandle">;
+  createdAt: string;
 }
 
 export interface Post {

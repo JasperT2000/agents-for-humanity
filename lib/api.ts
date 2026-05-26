@@ -10,11 +10,14 @@ import {
   agents,
   causes,
   deadEndMarkers,
+  findingProblemLinks,
   pathwayProposals,
   pathways,
+  perspectives,
   posts,
   problems,
   proposals,
+  subProblems,
   synthesisDocuments,
   synthesisVersions,
   users,
@@ -27,11 +30,14 @@ import type {
   AgentProfile,
   Cause,
   DeadEndMarker,
+  PerspectiveStatus,
+  PerspectiveSummary,
   PlatformStats,
   Post,
   Problem,
   ProblemDetail,
   Proposal,
+  SubProblemSummary,
   SynthesisDocument,
   SynthesisVersion,
 } from "./types";
@@ -330,6 +336,7 @@ export async function getProblem(id: string): Promise<ProblemDetail | null> {
       title: problems.title,
       description: problems.description,
       region: problems.region,
+      isLegacyFlat: problems.isLegacyFlat,
       tags: problems.tags,
       postedByType: problems.postedByType,
       postedByAgentId: problems.postedByAgentId,
@@ -382,6 +389,7 @@ export async function getProblem(id: string): Promise<ProblemDetail | null> {
     title: row.title,
     description: row.description,
     region: row.region,
+    isLegacyFlat: row.isLegacyFlat,
     primaryCause: { id: row.causeId, slug: row.causeSlug, name: row.causeName, icon: row.causeIcon },
     tags: row.tags,
     postedByType: row.postedByType as "agent" | "human",
@@ -854,4 +862,140 @@ export async function getAgent(id: string): Promise<AgentProfile | null> {
     recentPosts: [],
     synthesisContributions: synthCount[0]?.n ?? 0,
   };
+}
+
+// ── Sub-problems (Phase 1) + Perspectives (Phase 2) ──────────────────────────
+
+/**
+ * List sub-problems for a problem in insertion order, with per-sub-problem
+ * counts (posts, findings linked, active+accepted proposals) so the hub UI can
+ * render rich cards without follow-up requests.
+ */
+export async function getSubProblems(problemId: string): Promise<SubProblemSummary[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: subProblems.id,
+      problemId: subProblems.problemId,
+      title: subProblems.title,
+      description: subProblems.description,
+      displayOrder: subProblems.displayOrder,
+      status: subProblems.status,
+      createdAt: subProblems.createdAt,
+    })
+    .from(subProblems)
+    .where(eq(subProblems.problemId, problemId))
+    .orderBy(asc(subProblems.displayOrder));
+
+  if (rows.length === 0) return [];
+
+  const subIds = rows.map((r) => r.id);
+
+  const [postRows, findingRows, proposalRows] = await Promise.all([
+    db
+      .select({ subProblemId: posts.subProblemId, n: count() })
+      .from(posts)
+      .where(and(eq(posts.problemId, problemId), inArray(posts.subProblemId, subIds), eq(posts.isHidden, false)))
+      .groupBy(posts.subProblemId),
+    db
+      .select({ subProblemId: findingProblemLinks.subProblemId, n: count() })
+      .from(findingProblemLinks)
+      .where(and(eq(findingProblemLinks.problemId, problemId), inArray(findingProblemLinks.subProblemId, subIds)))
+      .groupBy(findingProblemLinks.subProblemId),
+    db
+      .select({ subProblemId: proposals.subProblemId, n: count() })
+      .from(proposals)
+      .where(and(eq(proposals.problemId, problemId), inArray(proposals.subProblemId, subIds)))
+      .groupBy(proposals.subProblemId),
+  ]);
+
+  const postCounts = new Map<string, number>();
+  for (const r of postRows) if (r.subProblemId) postCounts.set(r.subProblemId, r.n);
+  const findingCounts = new Map<string, number>();
+  for (const r of findingRows) if (r.subProblemId) findingCounts.set(r.subProblemId, r.n);
+  const proposalCounts = new Map<string, number>();
+  for (const r of proposalRows) if (r.subProblemId) proposalCounts.set(r.subProblemId, r.n);
+
+  return rows.map((r) => ({
+    id: r.id,
+    problemId: r.problemId,
+    title: r.title,
+    description: r.description,
+    displayOrder: r.displayOrder,
+    status: r.status as "open" | "closed",
+    postCount: postCounts.get(r.id) ?? 0,
+    findingsCount: findingCounts.get(r.id) ?? 0,
+    proposalCount: proposalCounts.get(r.id) ?? 0,
+    createdAt: toIso(r.createdAt),
+  }));
+}
+
+/**
+ * List perspectives (council seats) for a problem. Includes the filler so
+ * the council UI can show attribution.
+ */
+export async function getPerspectives(problemId: string): Promise<PerspectiveSummary[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: perspectives.id,
+      problemId: perspectives.problemId,
+      label: perspectives.label,
+      description: perspectives.description,
+      status: perspectives.status,
+      filledByAgentId: perspectives.filledByAgentId,
+      filledByUserId: perspectives.filledByUserId,
+      createdAt: perspectives.createdAt,
+    })
+    .from(perspectives)
+    .where(eq(perspectives.problemId, problemId))
+    .orderBy(asc(perspectives.createdAt));
+
+  if (rows.length === 0) return [];
+
+  // Resolve fillers in one round-trip each.
+  const agentIds = rows.map((r) => r.filledByAgentId).filter((x): x is string => x !== null);
+  const userIds = rows.map((r) => r.filledByUserId).filter((x): x is string => x !== null);
+
+  const [agentRows, userRows] = await Promise.all([
+    agentIds.length > 0
+      ? db
+          .select({ id: agents.id, displayName: agents.displayName, modelFamily: agents.modelFamily })
+          .from(agents)
+          .where(inArray(agents.id, agentIds))
+      : Promise.resolve([]),
+    userIds.length > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName, xHandle: users.xHandle })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
+  ]);
+
+  const agentById = new Map(agentRows.map((a) => [a.id, a]));
+  const userById = new Map(userRows.map((u) => [u.id, u]));
+
+  return rows.map((r) => {
+    const summary: PerspectiveSummary = {
+      id: r.id,
+      problemId: r.problemId,
+      label: r.label,
+      description: r.description,
+      status: r.status as PerspectiveStatus,
+      createdAt: toIso(r.createdAt),
+    };
+    if (r.filledByAgentId) {
+      const a = agentById.get(r.filledByAgentId);
+      if (a) summary.filledByAgent = { id: a.id, displayName: a.displayName, modelFamily: a.modelFamily as Agent["modelFamily"] };
+    }
+    if (r.filledByUserId) {
+      const u = userById.get(r.filledByUserId);
+      if (u) summary.filledByUser = { id: u.id, displayName: u.displayName, xHandle: u.xHandle };
+    }
+    return summary;
+  });
 }
