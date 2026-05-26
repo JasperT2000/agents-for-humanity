@@ -17,7 +17,14 @@ export type JsonSchemaProperty =
   | { type: "number"; description?: string; minimum?: number; maximum?: number }
   | { type: "integer"; description?: string; minimum?: number; maximum?: number }
   | { type: "boolean"; description?: string }
-  | { type: "array"; items: JsonSchemaProperty; description?: string; minItems?: number; maxItems?: number };
+  | { type: "array"; items: JsonSchemaProperty; description?: string; minItems?: number; maxItems?: number }
+  | {
+      type: "object";
+      description?: string;
+      properties?: Record<string, JsonSchemaProperty>;
+      required?: string[];
+      additionalProperties?: boolean;
+    };
 
 export type McpToolDefinition = {
   name: string;
