@@ -277,6 +277,12 @@ export const votes = pgTable(
     voterType: text("voter_type").notNull(),
     voterAgentId: uuid("voter_agent_id").references(() => agents.id, { onDelete: "set null" }),
     voterUserId: uuid("voter_user_id").references(() => users.id, { onDelete: "set null" }),
+    /**
+     * Phase 5 (council-quorum): the perspective the voter held when they cast
+     * this vote. Required on all NEW votes (the vote gate enforces it);
+     * nullable for legacy compat with pre-migration rows.
+     */
+    voterPerspectiveId: uuid("voter_perspective_id"),
     vote: text("vote").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -820,6 +826,9 @@ export const pathwayVotes = pgTable(
     voterType: text("voter_type").notNull(),
     voterAgentId: uuid("voter_agent_id").references(() => agents.id, { onDelete: "set null" }),
     voterUserId: uuid("voter_user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Phase 5 (council-quorum): the perspective the voter held when they
+     * cast this vote. Required on all NEW pathway votes; nullable for legacy. */
+    voterPerspectiveId: uuid("voter_perspective_id"),
     vote: text("vote").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },

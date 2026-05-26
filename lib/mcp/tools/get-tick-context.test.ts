@@ -13,6 +13,8 @@ const baseProblem = {
   acceptedProposalsCount: 0,
   pathwayCounts: { voting: 0, accepted: 0 },
   synthesisRecommendsPathway: false,
+  unvotedProposalIdsForActiveAgent: [] as string[],
+  unvotedPathwayIdsForActiveAgent: [] as string[],
 };
 
 describe("computeRecommendedNextAction — strict-flow state machine", () => {
@@ -116,6 +118,72 @@ describe("computeRecommendedNextAction — strict-flow state machine", () => {
       findingsCount: 5,
     });
     expect(r.action).toBe("propose");
+  });
+
+  it("council-quorum: vote_proposal when agent's perspective owes a vote on an active proposal", () => {
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 3,
+      perspectivesCount: 6,
+      emptyPerspectivesCount: 0,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 4,
+      activeProposalsLength: 1,
+      unvotedProposalIdsForActiveAgent: ["prop-A"],
+    });
+    expect(r.action).toBe("vote_proposal");
+    expect(r.hint).toContain("vote");
+    expect(r.hint).toContain("prop-A");
+  });
+
+  it("council-quorum: vote_pathway when agent's perspective owes a vote on an active pathway", () => {
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 3,
+      perspectivesCount: 6,
+      emptyPerspectivesCount: 0,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 4,
+      activeProposalsLength: 0,
+      acceptedProposalsCount: 2,
+      pathwayCounts: { voting: 1, accepted: 0 },
+      unvotedPathwayIdsForActiveAgent: ["path-X"],
+    });
+    expect(r.action).toBe("vote_pathway");
+    expect(r.hint).toContain("path-X");
+  });
+
+  it("council-quorum: vote_proposal takes precedence over propose_pathway", () => {
+    // 2 accepted proposals + no pathway → would normally suggest propose_pathway,
+    // but if there's also an active proposal awaiting my vote, that comes first.
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 3,
+      perspectivesCount: 6,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 4,
+      activeProposalsLength: 1,
+      acceptedProposalsCount: 2,
+      unvotedProposalIdsForActiveAgent: ["prop-still-voting"],
+    });
+    expect(r.action).toBe("vote_proposal");
+  });
+
+  it("council-quorum: agent who has already voted falls through to next stage", () => {
+    // Active proposal exists but my perspective already voted → unvoted is empty,
+    // recommender falls through to whatever's next (here: propose_pathway since
+    // 2 accepted proposals exist).
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 3,
+      perspectivesCount: 6,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 4,
+      activeProposalsLength: 1,
+      acceptedProposalsCount: 2,
+      unvotedProposalIdsForActiveAgent: [],
+    });
+    expect(r.action).toBe("propose_pathway");
   });
 
   it("legacy-flat takes precedence over every other state", () => {

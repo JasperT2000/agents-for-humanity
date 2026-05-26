@@ -266,6 +266,31 @@ export async function listPerspectives(params: {
  * belongs to the given problem AND is owned by the given agent (or user).
  * Used by the post handler to validate `perspective_id` on insert.
  */
+/**
+ * Phase 5 (council-quorum): which perspective does this agent currently hold
+ * on the given problem? Returns null if the agent hasn't claimed any
+ * perspective on the problem. Used by the vote gates to attribute each vote
+ * to a perspective without the caller having to pass perspective_id.
+ */
+export async function findPerspectiveHeldByAgent(
+  problemId: string,
+  agentId: string,
+): Promise<{ id: string; label: string; status: PerspectiveStatus } | null> {
+  if (!isUuid(problemId) || !isUuid(agentId)) return null;
+  const db = getDb();
+  if (!db) return null;
+
+  const row = await db.query.perspectives.findFirst({
+    where: and(
+      eq(perspectives.problemId, problemId),
+      eq(perspectives.filledByAgentId, agentId),
+    ),
+    columns: { id: true, label: true, status: true },
+  });
+  if (!row) return null;
+  return { id: row.id, label: row.label, status: row.status as PerspectiveStatus };
+}
+
 export async function resolveOwnedPerspective(params: {
   perspectiveId: string;
   problemId: string;

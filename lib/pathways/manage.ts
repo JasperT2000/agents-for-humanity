@@ -1,15 +1,17 @@
-import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
   pathwayProposals,
   pathwayVotes,
   pathways,
+  perspectives,
   posts,
   problems,
   proposals,
 } from "@/db/schema";
 import { recordActivity, type ActivityActor } from "@/lib/activity/record";
+import { findPerspectiveHeldByAgent } from "@/lib/perspectives/manage";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -192,6 +194,11 @@ export async function createPathway(params: {
 // Vote
 // =============================================================================
 
+const COUNCIL_SUPERMAJORITY_RATIO = 2 / 3;
+function pathwaySupermajorityYesNeeded(filledCount: number): number {
+  return Math.max(1, Math.ceil(filledCount * COUNCIL_SUPERMAJORITY_RATIO));
+}
+
 export async function votePathway(params: {
   pathwayId: string;
   vote: "yes" | "no";
@@ -203,6 +210,16 @@ export async function votePathway(params: {
       vote: "yes" | "no";
       already_voted: boolean;
       now_accepted: boolean;
+      /** Phase 5 council-quorum: present on strict-mode votes. */
+      council_quorum?: {
+        voted: number;
+        filled_total: number;
+        yes: number;
+        no: number;
+        yes_needed: number;
+      };
+      /** Phase 5 council-quorum: name of the perspective the vote was cast under. */
+      perspective_label?: string;
     }
   | { error: ManageError; detail?: string }
 > {
@@ -231,6 +248,148 @@ export async function votePathway(params: {
   if (!pathway) return { error: "PATHWAY_NOT_FOUND" };
   if (pathway.status !== "voting") return { error: "PATHWAY_NOT_VOTING", detail: `pathway is ${pathway.status}` };
 
+  // Is this a strict-mode (council-quorum) problem? Only agents holding a
+  // claimed perspective can vote on strict-mode pathways.
+  const [problem] = await db
+    .select({ isLegacyFlat: problems.isLegacyFlat })
+    .from(problems)
+    .where(eq(problems.id, pathway.problemId));
+  const strictCouncilMode = !!hasAgent && !problem?.isLegacyFlat;
+
+  // -----------------------------------------------------------------------
+  // STRICT COUNCIL-QUORUM path (agent voter on non-legacy problem).
+  // -----------------------------------------------------------------------
+  if (strictCouncilMode) {
+    const held = await findPerspectiveHeldByAgent(pathway.problemId, params.voterAgentId!);
+    if (!held) {
+      return {
+        error: "VOTER_NOT_ENGAGED",
+        detail:
+          "You must hold a claimed perspective on this problem to vote on its pathways. Call kind=claim_perspective (and post under it) first.",
+      };
+    }
+
+    // Has this perspective already voted on this pathway?
+    const existing = await db
+      .select({ id: pathwayVotes.id, vote: pathwayVotes.vote })
+      .from(pathwayVotes)
+      .where(
+        and(
+          eq(pathwayVotes.pathwayId, params.pathwayId),
+          eq(pathwayVotes.voterPerspectiveId, held.id),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) {
+      return {
+        pathway_id: params.pathwayId,
+        vote: existing[0].vote as "yes" | "no",
+        already_voted: true,
+        now_accepted: false,
+        perspective_label: held.label,
+      };
+    }
+
+    // Council size = filled perspectives on the parent problem.
+    const [filledRow] = await db
+      .select({ n: count() })
+      .from(perspectives)
+      .where(
+        and(eq(perspectives.problemId, pathway.problemId), eq(perspectives.status, "filled")),
+      );
+    const filledCount = filledRow?.n ?? 0;
+    if (filledCount === 0) {
+      return {
+        error: "VOTER_NOT_ENGAGED",
+        detail: "No perspectives are filled on this problem yet — council needs voices before pathway votes count.",
+      };
+    }
+
+    let nowAccepted = false;
+    let votedAfter = 0;
+    let yesAfter = 0;
+    let noAfter = 0;
+
+    await db.transaction(async (tx) => {
+      await tx.insert(pathwayVotes).values({
+        pathwayId: params.pathwayId,
+        voterType: "agent",
+        voterAgentId: params.voterAgentId!,
+        voterPerspectiveId: held.id,
+        vote: params.vote,
+      });
+
+      if (params.vote === "yes") {
+        await tx
+          .update(pathways)
+          .set({ voteCountYes: sql`${pathways.voteCountYes} + 1`, updatedAt: new Date() })
+          .where(eq(pathways.id, params.pathwayId));
+      } else {
+        await tx
+          .update(pathways)
+          .set({ voteCountNo: sql`${pathways.voteCountNo} + 1`, updatedAt: new Date() })
+          .where(eq(pathways.id, params.pathwayId));
+      }
+
+      const [distinctRow] = await tx
+        .select({
+          n: sql<number>`count(distinct ${pathwayVotes.voterPerspectiveId})`,
+        })
+        .from(pathwayVotes)
+        .where(and(eq(pathwayVotes.pathwayId, params.pathwayId), isNotNull(pathwayVotes.voterPerspectiveId)));
+      votedAfter = Number(distinctRow?.n ?? 0);
+
+      yesAfter = pathway.voteCountYes + (params.vote === "yes" ? 1 : 0);
+      noAfter = pathway.voteCountNo + (params.vote === "no" ? 1 : 0);
+
+      const yesNeeded = pathwaySupermajorityYesNeeded(filledCount);
+      if (votedAfter >= filledCount && yesAfter >= yesNeeded) {
+        await tx
+          .update(pathways)
+          .set({ status: "accepted", updatedAt: new Date() })
+          .where(eq(pathways.id, params.pathwayId));
+        nowAccepted = true;
+      }
+    });
+
+    await recordActivity({
+      eventType: "pathway.vote",
+      actor: { type: "agent", agentId: params.voterAgentId! },
+      problemId: pathway.problemId,
+      targetId: params.pathwayId,
+      summary: `Voted ${params.vote} on pathway ${params.pathwayId.slice(0, 8)}… as ${held.label}`,
+    });
+    if (nowAccepted) {
+      await recordActivity({
+        eventType: "pathway.accepted",
+        actor: { type: "system" },
+        problemId: pathway.problemId,
+        targetId: params.pathwayId,
+        summary: `Pathway accepted by council (${yesAfter}/${filledCount} yes; quorum met)`,
+      });
+    }
+
+    return {
+      pathway_id: params.pathwayId,
+      vote: params.vote,
+      already_voted: false,
+      now_accepted: nowAccepted,
+      perspective_label: held.label,
+      council_quorum: {
+        voted: votedAfter,
+        filled_total: filledCount,
+        yes: yesAfter,
+        no: noAfter,
+        yes_needed: pathwaySupermajorityYesNeeded(filledCount),
+      },
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // LEGACY-FLAT path (preserves the original 5-yes & yes > no behavior for
+  // pre-Phase-5 problems and for human voters who don't carry a perspective).
+  // -----------------------------------------------------------------------
+
   // Voter must be engaged in the problem (≥1 post)
   const postCountClause = hasAgent
     ? and(eq(posts.problemId, pathway.problemId), eq(posts.authorAgentId, params.voterAgentId!))
@@ -257,9 +416,6 @@ export async function votePathway(params: {
     )
     .limit(1);
   if (existing.length > 0) {
-    // Pathway is still 'voting' at this point (we early-returned PATHWAY_NOT_VOTING
-    // for any other status), so the previous-vote idempotent path can't have caused
-    // acceptance from this call.
     return {
       pathway_id: params.pathwayId,
       vote: existing[0].vote as "yes" | "no",
@@ -268,7 +424,6 @@ export async function votePathway(params: {
     };
   }
 
-  // Write vote + update counters + check acceptance threshold
   let nowAccepted = false;
   await db.transaction(async (tx) => {
     await tx.insert(pathwayVotes).values({
@@ -318,7 +473,7 @@ export async function votePathway(params: {
       actor: { type: "system" },
       problemId: pathway.problemId,
       targetId: params.pathwayId,
-      summary: `Pathway accepted (crossed 5-yes threshold)`,
+      summary: `Pathway accepted (legacy 5-yes threshold)`,
     });
   }
 

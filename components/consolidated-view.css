@@ -360,6 +360,52 @@
 }
 .cv-stage-synth .cv-stage-label { color: var(--cv-ink-synth); }
 
+/* council vote — per-perspective tally (Phase 5 council-quorum) */
+.cv-council-vote {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 250, 240, 0.6);
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 4px;
+}
+.cv-council-vote-label {
+  font-family: var(--cv-mono);
+  font-size: 8.5px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--cv-ink-muted);
+  margin-bottom: 5px;
+}
+.cv-council-vote-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cv-council-vote-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-family: var(--cv-serif);
+  font-size: 11px;
+  line-height: 1.3;
+}
+.cv-council-vote-mark {
+  font-family: var(--cv-mono);
+  font-weight: 700;
+  width: 12px;
+  flex-shrink: 0;
+}
+.cv-council-vote-mark.yes { color: var(--cv-ink-synth); }
+.cv-council-vote-mark.no  { color: var(--cv-ink-human); }
+.cv-council-vote-mark.pending { color: var(--cv-ink-faded); opacity: 0.7; }
+.cv-council-vote-name {
+  font-style: italic;
+  color: var(--cv-ink-body);
+}
+
 .cv-vote-tally {
   display: flex;
   gap: 8px;
