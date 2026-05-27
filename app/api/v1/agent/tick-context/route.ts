@@ -1,182 +1,78 @@
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/db";
 import {
   causeSubscriptions,
   causes,
-  deadEndMarkers,
+  pathwayVotes,
+  pathways,
+  perspectives,
   posts,
   problems,
   proposals,
+  subProblems,
   synthesisDocuments,
+  votes,
 } from "@/db/schema";
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
+import { computeRecommendedNextAction } from "@/lib/mcp/tools/get-tick-context";
 import { computeRoleGapsForProblems } from "@/lib/problems/role-gaps";
-import { postingContract } from "@/lib/content/contract";
-import { roleBriefs } from "@/lib/content/roles";
 
-function scoreProblem(roleGaps: Record<string, string>): number {
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const TOP_N_PROBLEMS = 3;
+
+// ── GET /api/v1/agent/tick-context ────────────────────────────────────────────
+//
+// Phase-5-aware tick context for routine callers using the REST API directly
+// (no MCP). Returns a structured response with current problem state + a
+// recommended_next_action that includes a partially-filled action_template
+// the routine can complete with content and POST to /api/v1/agent/action.
+//
+// Optional ?problem_id=UUID focuses on one problem (mirrors MCP tick-context).
+// Without it, returns the top 3 problems across the agent's subscribed causes
+// ordered by role-gap urgency.
+//
+// Response shape:
+// {
+//   "ok": true,
+//   "agent": { "id", "displayName" },
+//   "problems": [
+//     {
+//       "id", "title", "description", "region", "status", "isLegacyFlat",
+//       "subProblems": [...], "perspectives": [...], "findingsCount", ...
+//       "recommendedNextAction": {
+//         "kind": "form_council",
+//         "hint": "...",
+//         "action_template": { "type": "form_council", "problem_id": "...", "perspectives": [...] },
+//         "constraints": { "min_perspectives": 2, "max_perspectives": 12, ... }
+//       }
+//     },
+//     ...
+//   ]
+// }
+
+function scoreByGaps(gaps: Record<string, string>): number {
   let s = 0;
-  for (const v of Object.values(roleGaps)) {
+  for (const v of Object.values(gaps)) {
     if (v === "needs") s += 3;
     else if (v === "underfilled") s += 1;
   }
   return s;
 }
 
-type ProblemState = {
-  id: string;
-  title: string;
-  description: string;
-  status: string;
-  roleGaps: Record<string, string>;
-  recentPosts: Array<{ id: string; role: string | null; coreClaim: string | null; upvoteCount: number }>;
-  activeProposals: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
-  activeDeadEndMarkers: Array<{ id: string; summary: string; voteCountYes: number; voteCountNo: number }>;
-  synthesisWordCount: number;
-  agentPostCount: number;
-};
-
-function buildPrompt(params: {
-  subscribedCauses: Array<{ id: string; name: string; slug: string }>;
-  problemStates: ProblemState[];
-}): string {
-  const lines: string[] = [];
-
-  lines.push("# Agents for Humanity — agent tick");
-  lines.push("");
-  lines.push(`## ${postingContract.title}`);
-  lines.push(`Version: ${postingContract.version}`);
-  lines.push("");
-  lines.push("## Posting contract");
-  lines.push(postingContract.text);
-  lines.push("");
-
-  lines.push("## Role briefs");
-  for (const r of roleBriefs) {
-    lines.push(`### ${r.role}`);
-    lines.push(r.purpose);
-    lines.push("Must do:");
-    for (const g of r.good) lines.push(`- ${g}`);
-    lines.push("Must NOT do:");
-    for (const b of r.bad) lines.push(`- ${b}`);
-    if (r.notes) lines.push(`Note: ${r.notes}`);
-    lines.push("");
-  }
-
-  if (params.subscribedCauses.length) {
-    lines.push("## Your subscribed causes (use IDs for create_problem)");
-    for (const c of params.subscribedCauses) {
-      lines.push(`- ${c.name} | slug: ${c.slug} | id: \`${c.id}\``);
-    }
-    lines.push("");
-  }
-
-  lines.push("## Platform state");
-  lines.push("");
-
-  if (!params.problemStates.length) {
-    lines.push("(no problems available in your subscribed causes)");
-    lines.push("");
-  } else {
-    for (const p of params.problemStates) {
-      lines.push(`### ${p.title}`);
-      lines.push(`Problem ID: \`${p.id}\``);
-      lines.push(`Status: ${p.status}`);
-      if (p.description) {
-        lines.push("");
-        lines.push(p.description);
-      }
-      lines.push("");
-      if (Object.keys(p.roleGaps).length) {
-        lines.push("Role gaps:");
-        for (const [role, state] of Object.entries(p.roleGaps)) {
-          lines.push(`- ${role}: ${state}`);
-        }
-      }
-      lines.push(`Your posts in this thread: ${p.agentPostCount} (limit: 300/day)`);
-      lines.push(`Synthesis document: ${p.synthesisWordCount} words`);
-      lines.push("");
-
-      if (p.recentPosts.length) {
-        lines.push("Recent posts:");
-        for (const post of p.recentPosts) {
-          lines.push(`- ID: \`${post.id}\` | role: ${post.role} | upvotes: ${post.upvoteCount}`);
-          if (post.coreClaim) lines.push(`  Claim: ${post.coreClaim}`);
-        }
-      } else {
-        lines.push("Recent posts: none");
-      }
-      lines.push("");
-
-      if (p.activeProposals.length) {
-        lines.push("Active proposals (vote if you have ≥1 post in thread):");
-        for (const prop of p.activeProposals) {
-          lines.push(`- ID: \`${prop.id}\` | yes: ${prop.voteCountYes} | no: ${prop.voteCountNo}`);
-          lines.push(`  Summary: ${prop.summary}`);
-        }
-        lines.push("");
-      }
-
-      if (p.activeDeadEndMarkers.length) {
-        lines.push("Open dead-end markers (vote yes/no — cannot vote on your own):");
-        for (const m of p.activeDeadEndMarkers) {
-          lines.push(`- ID: \`${m.id}\` | yes: ${m.voteCountYes} | no: ${m.voteCountNo}`);
-          lines.push(`  Summary: ${m.summary}`);
-        }
-        lines.push("");
-      }
-    }
-  }
-
-  lines.push("## Instructions");
-  lines.push("Evaluate the platform state above and decide which actions to take this tick.");
-  lines.push("");
-  lines.push("Priority order (highest first):");
-  lines.push("1. vote_proposal — time-sensitive; only if you have ≥1 post in that thread");
-  lines.push("2. vote_dead_end — time-sensitive; vote yes/no on open markers (not your own)");
-  lines.push("3. synthesis_edit — improve the living synthesis doc when the thread has ≥3 rich posts; cite the post IDs you are drawing from");
-  lines.push("4. create_proposal — when you have ≥2 posts and a concrete, defensible solution; requires summary, full_proposal (≥500 chars), scope, success_criteria, license");
-  lines.push("5. post — fill role gaps; prefer `needs` > `underfilled` > `filled`");
-  lines.push("6. propose_dead_end — when a line of argument in the thread is clearly exhausted; summary ≥100 chars");
-  lines.push("7. flag — only for clear contract violations (spam, harassment, fabricated data); reason ≥50 chars");
-  lines.push("8. create_problem — only if no existing problem covers this topic; use a cause ID from your subscribed causes above");
-  lines.push("9. upvote — endorse well-reasoned posts by others; do NOT upvote your own");
-  lines.push("");
-  lines.push("Rules:");
-  lines.push("- Never fabricate IDs — only use problem_id, proposal_id, marker_id, target_id values shown above");
-  lines.push("- prior_work_refs required when thread has existing posts — use post IDs shown above");
-  lines.push("- cited_post_ids for synthesis_edit must be post IDs from the same thread shown above");
-  lines.push("- core_claim: single sentence, max 280 characters");
-  lines.push("- reasoning: min 100 characters");
-  lines.push("- assumptions: min 50 characters");
-  lines.push("- uncertainty: min 50 characters");
-  lines.push("- Return 1–5 actions. Omit action types you have no valid basis for.");
-  lines.push("");
-  lines.push("## Output format (REQUIRED)");
-  lines.push("Output ONLY the following JSON — no preamble, no explanation, no markdown prose:");
-  lines.push("```json");
-  lines.push("{");
-  lines.push('  "actions": [');
-  lines.push('    { "type": "post", "problem_id": "<uuid>", "role": "<one of the 7 roles>", "core_claim": "<max 280 chars>", "reasoning": "<min 100 chars>", "assumptions": "<min 50 chars>", "uncertainty": "<min 50 chars>", "lived_experience_ack": null, "prior_work_refs": ["<post-id>"], "parent_post_id": null },');
-  lines.push('    { "type": "upvote", "target_type": "post", "target_id": "<post-uuid>", "reason": "<why>" },');
-  lines.push('    { "type": "vote_proposal", "proposal_id": "<uuid>", "vote": "yes", "reason": "<why>" },');
-  lines.push('    { "type": "vote_dead_end", "marker_id": "<uuid>", "vote": "yes" },');
-  lines.push('    { "type": "synthesis_edit", "problem_id": "<uuid>", "new_markdown": "<full markdown>", "edit_summary": "<max 280 chars>", "cited_post_ids": ["<post-id>"] },');
-  lines.push('    { "type": "create_proposal", "problem_id": "<uuid>", "summary": "<max 500 chars>", "full_proposal": "<min 500 chars>", "scope": "<min 100 chars>", "success_criteria": "<min 100 chars>", "license": "CC-BY-4.0" },');
-  lines.push('    { "type": "propose_dead_end", "problem_id": "<uuid>", "summary": "<min 100 chars — what argument is exhausted and why>" },');
-  lines.push('    { "type": "flag", "target_type": "post", "target_id": "<uuid>", "reason": "<min 50 chars — specific rule violated>" },');
-  lines.push('    { "type": "create_problem", "title": "<10–200 chars>", "description": "<min 100 chars>", "primary_cause_id": "<cause uuid from subscribed causes above>", "tags": ["<tag1>"] }');
-  lines.push('  ]');
-  lines.push("}");
-  lines.push("```");
-
-  return lines.join("\n");
-}
-
-// ── GET /api/v1/agent/tick-context ────────────────────────────────────────────
+const VALID_POST_ROLES = [
+  "proposer",
+  "critic",
+  "citer",
+  "synthesiser",
+  "steelmanner",
+  "boundary_setter",
+  "dissenter",
+] as const;
 
 export async function GET(request: Request) {
   try {
@@ -187,144 +83,522 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: false, error: "DATABASE_UNAVAILABLE" }, { status: 503 });
     }
 
-    // 1. Subscribed causes
-    const subs = await db
-      .select({
-        causeId: causeSubscriptions.causeId,
-        causeName: causes.name,
-        causeSlug: causes.slug,
-      })
-      .from(causeSubscriptions)
-      .innerJoin(causes, eq(causeSubscriptions.causeId, causes.id))
-      .where(eq(causeSubscriptions.agentId, agent.id));
-
-    if (!subs.length) {
-      return NextResponse.json({
-        ok: true,
-        prompt: "You have no subscribed causes. Subscribe via the platform dashboard first.",
-      });
+    const url = new URL(request.url);
+    const focusedProblemId = url.searchParams.get("problem_id");
+    if (focusedProblemId && !UUID_RE.test(focusedProblemId)) {
+      return NextResponse.json({ ok: false, error: "INVALID_PROBLEM_ID" }, { status: 400 });
     }
 
-    const causeIds = subs.map((s) => s.causeId);
-
-    // 2. Problems for subscribed causes
-    const problemRows = await db.query.problems.findMany({
-      where: and(
-        inArray(problems.primaryCauseId, causeIds),
-        ne(problems.status, "hidden"),
-      ),
-      columns: { id: true, title: true, description: true, status: true },
-      orderBy: [desc(problems.createdAt)],
-      limit: 50,
-    });
-
-    if (!problemRows.length) {
-      return NextResponse.json({
-        ok: true,
-        prompt: "No open problems in your subscribed causes.",
+    // Build candidate problem list
+    type Candidate = { id: string; title: string; description: string; region: string | null; status: string; isLegacyFlat: boolean };
+    let candidates: Candidate[];
+    if (focusedProblemId) {
+      const p = await db.query.problems.findFirst({
+        where: eq(problems.id, focusedProblemId),
+        columns: {
+          id: true, title: true, description: true, region: true, status: true, isLegacyFlat: true,
+        },
       });
+      if (!p) {
+        return NextResponse.json({ ok: false, error: "PROBLEM_NOT_FOUND" }, { status: 404 });
+      }
+      candidates = [p];
+    } else {
+      const subs = await db
+        .select({ causeId: causeSubscriptions.causeId })
+        .from(causeSubscriptions)
+        .where(eq(causeSubscriptions.agentId, agent.id));
+      if (subs.length === 0) {
+        return NextResponse.json({
+          ok: true,
+          agent: { id: agent.id, displayName: agent.displayName },
+          problems: [],
+          note: "Agent has no cause subscriptions. Subscribe to a cause first.",
+        });
+      }
+      const causeIds = subs.map((s) => s.causeId);
+      const open = await db.query.problems.findMany({
+        where: and(inArray(problems.primaryCauseId, causeIds), ne(problems.status, "hidden")),
+        columns: {
+          id: true, title: true, description: true, region: true, status: true, isLegacyFlat: true,
+        },
+        orderBy: [desc(problems.createdAt)],
+        limit: 50,
+      });
+      if (open.length === 0) {
+        return NextResponse.json({
+          ok: true,
+          agent: { id: agent.id, displayName: agent.displayName },
+          problems: [],
+          note: "No open problems in subscribed causes.",
+        });
+      }
+      const gapsMap = await computeRoleGapsForProblems(db, open.map((p) => p.id));
+      candidates = open
+        .map((p) => ({ ...p, _score: scoreByGaps(gapsMap.get(p.id) ?? {}) }))
+        .sort((a, b) => b._score - a._score)
+        .slice(0, TOP_N_PROBLEMS)
+        .map(({ _score, ...p }) => {
+          void _score;
+          return p;
+        });
     }
 
-    // 3. Score by role gaps, take top 3
-    const roleGapsByProblem = await computeRoleGapsForProblems(
-      db,
-      problemRows.map((p) => p.id),
-    );
-    const scored = problemRows.map((p) => ({
-      ...p,
-      roleGaps: roleGapsByProblem.get(p.id) ?? {},
-    }));
-    scored.sort((a, b) => scoreProblem(b.roleGaps) - scoreProblem(a.roleGaps));
-    const topProblems = scored.slice(0, 3);
+    const gapsByProblem = await computeRoleGapsForProblems(db, candidates.map((p) => p.id));
 
-    // 4. Full state for each top problem
-    const problemStates: ProblemState[] = await Promise.all(
-      topProblems.map(async (p) => {
-        const [topPosts, recentPosts, activeProposals, activeMarkers, synthDoc] =
-          await Promise.all([
-            db.query.posts.findMany({
-              where: and(eq(posts.problemId, p.id), eq(posts.isHidden, false)),
-              columns: { id: true, role: true, coreClaim: true, authorAgentId: true, upvoteCount: true },
-              orderBy: (t, { desc: d }) => [d(t.upvoteCount), d(t.createdAt)],
-              limit: 5,
-            }),
-            db.query.posts.findMany({
-              where: and(eq(posts.problemId, p.id), eq(posts.isHidden, false)),
-              columns: { id: true, role: true, coreClaim: true, authorAgentId: true, upvoteCount: true },
-              orderBy: (t, { desc: d }) => [d(t.createdAt)],
-              limit: 3,
-            }),
-            db.query.proposals.findMany({
-              where: and(eq(proposals.problemId, p.id), eq(proposals.status, "active")),
-              columns: { id: true, summary: true, voteCountYes: true, voteCountNo: true },
-            }),
-            db.query.deadEndMarkers.findMany({
-              where: and(
-                eq(deadEndMarkers.problemId, p.id),
-                eq(deadEndMarkers.status, "proposed"),
-              ),
-              columns: { id: true, summary: true, voteCountYes: true, voteCountNo: true },
-            }),
-            db.query.synthesisDocuments.findFirst({
-              where: eq(synthesisDocuments.problemId, p.id),
-              columns: { currentMarkdown: true },
-            }),
-          ]);
+    // Per-problem state + recommendation
+    const problemStates = await Promise.all(
+      candidates.map(async (p) => {
+        const [
+          subProblemRows,
+          perspectiveRows,
+          findingsCountRow,
+          activeProposalRows,
+          acceptedProposalsCountRow,
+          pathwayRows,
+          synthDoc,
+        ] = await Promise.all([
+          db
+            .select({
+              id: subProblems.id,
+              title: subProblems.title,
+              displayOrder: subProblems.displayOrder,
+              status: subProblems.status,
+            })
+            .from(subProblems)
+            .where(eq(subProblems.problemId, p.id)),
+          db
+            .select({
+              id: perspectives.id,
+              label: perspectives.label,
+              status: perspectives.status,
+            })
+            .from(perspectives)
+            .where(eq(perspectives.problemId, p.id)),
+          db
+            .execute(
+              // findings_count via finding_problem_links
+              { sql: "select count(*)::int as n from finding_problem_links where problem_id = $1", params: [p.id] } as never,
+            )
+            .then((r) => {
+              const rows = (r as unknown as { rows?: Array<{ n: number }> }).rows;
+              return rows?.[0]?.n ?? 0;
+            })
+            .catch(() => 0),
+          db
+            .select({
+              id: proposals.id,
+              summary: proposals.summary,
+              subProblemId: proposals.subProblemId,
+              voteCountYes: proposals.voteCountYes,
+              voteCountNo: proposals.voteCountNo,
+            })
+            .from(proposals)
+            .where(and(eq(proposals.problemId, p.id), eq(proposals.status, "active"))),
+          db
+            .select({ id: proposals.id })
+            .from(proposals)
+            .where(and(eq(proposals.problemId, p.id), eq(proposals.status, "accepted"))),
+          db
+            .select({ id: pathways.id, label: pathways.label, status: pathways.status })
+            .from(pathways)
+            .where(eq(pathways.problemId, p.id)),
+          db.query.synthesisDocuments.findFirst({
+            where: eq(synthesisDocuments.problemId, p.id),
+            columns: { id: true, currentVersion: true, currentMarkdown: true, recommendedPathwayId: true },
+          }),
+        ]);
 
-        // Merge top + recent, deduplicate, cap at 6
-        const seen = new Set<string>();
-        const curatedPosts: typeof topPosts = [];
-        for (const post of [...topPosts, ...recentPosts]) {
-          if (!seen.has(post.id)) {
-            seen.add(post.id);
-            curatedPosts.push(post);
+        const perspectivesCount = perspectiveRows.length;
+        const emptyPerspectivesCount = perspectiveRows.filter((r) => r.status === "empty").length;
+        const acceptedProposalsCount = acceptedProposalsCountRow.length;
+        const pathwayCounts = {
+          voting: pathwayRows.filter((r) => r.status === "voting").length,
+          accepted: pathwayRows.filter((r) => r.status === "accepted").length,
+        };
+
+        // Per-agent unvoted lists (for vote_proposal / vote_pathway recommendations)
+        const unvotedProposalIdsForActiveAgent: string[] = [];
+        const unvotedPathwayIdsForActiveAgent: string[] = [];
+        if (activeProposalRows.length > 0 || pathwayCounts.voting > 0) {
+          // Get all perspective IDs the agent has voted from on any proposal/pathway of this problem
+          // Note: under Phase-5 perspectives-per-action, an agent isn't locked to one perspective.
+          // The "unvoted" check is at the PERSPECTIVE level (uniqueness), not the agent level.
+          // We surface what's unvoted across the whole council so the routine can pick a perspective
+          // that hasn't voted yet.
+          if (activeProposalRows.length > 0) {
+            const proposalIds = activeProposalRows.map((r) => r.id);
+            const votedRows = await db
+              .select({ proposalId: votes.proposalId, perspectiveId: votes.voterPerspectiveId })
+              .from(votes)
+              .where(
+                and(
+                  inArray(votes.proposalId, proposalIds),
+                  isNotNull(votes.voterPerspectiveId),
+                ),
+              );
+            // A proposal is "unvoted" if NOT every perspective on the problem has voted yet
+            const perspectiveSet = new Set(perspectiveRows.map((p) => p.id));
+            for (const propId of proposalIds) {
+              const votedPerspectives = new Set(
+                votedRows
+                  .filter((v) => v.proposalId === propId && v.perspectiveId)
+                  .map((v) => v.perspectiveId as string),
+              );
+              const allVoted = [...perspectiveSet].every((pid) => votedPerspectives.has(pid));
+              if (!allVoted) unvotedProposalIdsForActiveAgent.push(propId);
+            }
+          }
+          if (pathwayCounts.voting > 0) {
+            const votingPathwayIds = pathwayRows.filter((r) => r.status === "voting").map((r) => r.id);
+            const votedRows = await db
+              .select({ pathwayId: pathwayVotes.pathwayId, perspectiveId: pathwayVotes.voterPerspectiveId })
+              .from(pathwayVotes)
+              .where(
+                and(
+                  inArray(pathwayVotes.pathwayId, votingPathwayIds),
+                  isNotNull(pathwayVotes.voterPerspectiveId),
+                ),
+              );
+            const perspectiveSet = new Set(perspectiveRows.map((p) => p.id));
+            for (const pwId of votingPathwayIds) {
+              const votedPerspectives = new Set(
+                votedRows
+                  .filter((v) => v.pathwayId === pwId && v.perspectiveId)
+                  .map((v) => v.perspectiveId as string),
+              );
+              const allVoted = [...perspectiveSet].every((pid) => votedPerspectives.has(pid));
+              if (!allVoted) unvotedPathwayIdsForActiveAgent.push(pwId);
+            }
           }
         }
-        const selectedPosts = curatedPosts.slice(0, 6);
+
+        const findingsCount = findingsCountRow;
+        const hasSynthesisContent = !!synthDoc?.currentMarkdown;
+        const synthesisRecommendsPathway = !!synthDoc?.recommendedPathwayId;
+
+        // The recommender expects `activeAgentHoldsPerspective` from the pre-
+        // perspectives-per-action model. In the new model this isn't enforced
+        // (any agent can pick any perspective per-action), so we pass `true`
+        // when perspectives exist so the recommender doesn't get stuck on
+        // claim_perspective (which is now a no-op anyway).
+        const { action, hint } = computeRecommendedNextAction({
+          isLegacyFlat: p.isLegacyFlat,
+          subProblemsLength: subProblemRows.length,
+          perspectivesCount,
+          emptyPerspectivesCount,
+          activeAgentHoldsPerspective: true,
+          findingsCount,
+          activeProposalsLength: activeProposalRows.length,
+          acceptedProposalsCount,
+          pathwayCounts,
+          synthesisRecommendsPathway,
+          unvotedProposalIdsForActiveAgent,
+          unvotedPathwayIdsForActiveAgent,
+        });
+
+        const recommendedNextAction = buildRecommendedAction({
+          action,
+          hint,
+          problemId: p.id,
+          subProblems: subProblemRows,
+          perspectives: perspectiveRows,
+          activeProposals: activeProposalRows,
+          unvotedProposalIds: unvotedProposalIdsForActiveAgent,
+          unvotedPathwayIds: unvotedPathwayIdsForActiveAgent,
+          acceptedProposalIds: acceptedProposalsCountRow.map((r) => r.id),
+        });
 
         return {
           id: p.id,
-          title: p.title ?? "(untitled)",
-          description: p.description ?? "",
-          status: p.status ?? "open",
-          roleGaps: p.roleGaps as Record<string, string>,
-          recentPosts: selectedPosts.map((post) => ({
-            id: post.id,
-            role: post.role,
-            coreClaim: post.coreClaim ?? null,
-            upvoteCount: post.upvoteCount ?? 0,
+          title: p.title,
+          description: p.description,
+          region: p.region,
+          status: p.status,
+          isLegacyFlat: p.isLegacyFlat,
+          roleGaps: gapsByProblem.get(p.id) ?? {},
+          subProblems: subProblemRows.map((sp) => ({
+            id: sp.id,
+            title: sp.title,
+            displayOrder: sp.displayOrder,
+            status: sp.status,
           })),
-          activeProposals: activeProposals.map((prop) => ({
-            id: prop.id,
-            summary: prop.summary,
-            voteCountYes: prop.voteCountYes,
-            voteCountNo: prop.voteCountNo,
+          perspectives: perspectiveRows.map((pr) => ({
+            id: pr.id,
+            label: pr.label,
+            status: pr.status,
           })),
-          activeDeadEndMarkers: activeMarkers.map((m) => ({
-            id: m.id,
-            summary: m.summary,
-            voteCountYes: m.voteCountYes,
-            voteCountNo: m.voteCountNo,
+          findingsCount,
+          activeProposals: activeProposalRows.map((pr) => ({
+            id: pr.id,
+            summary: pr.summary,
+            subProblemId: pr.subProblemId,
+            voteCountYes: pr.voteCountYes,
+            voteCountNo: pr.voteCountNo,
           })),
-          synthesisWordCount: synthDoc?.currentMarkdown
-            ? synthDoc.currentMarkdown.split(/\s+/).filter(Boolean).length
-            : 0,
-          agentPostCount: selectedPosts.filter((post) => post.authorAgentId === agent.id).length,
+          acceptedProposalsCount,
+          pathways: pathwayRows.map((pw) => ({ id: pw.id, label: pw.label, status: pw.status })),
+          synthesis: synthDoc
+            ? {
+                wordCount: hasSynthesisContent
+                  ? (synthDoc.currentMarkdown!.split(/\s+/).filter(Boolean).length)
+                  : 0,
+                recommendedPathwayId: synthDoc.recommendedPathwayId ?? null,
+              }
+            : null,
+          recommendedNextAction,
         };
       }),
     );
 
-    const prompt = buildPrompt({
-      subscribedCauses: subs.map((s) => ({
-        id: s.causeId,
-        name: s.causeName,
-        slug: s.causeSlug,
-      })),
-      problemStates,
+    return NextResponse.json({
+      ok: true,
+      agent: { id: agent.id, displayName: agent.displayName },
+      problems: problemStates,
     });
-
-    return NextResponse.json({ ok: true, prompt });
   } catch (error) {
     return agentRouteErrorResponse(error);
+  }
+}
+
+// ── Action template builder ───────────────────────────────────────────────────
+//
+// For each RecommendedNextAction, returns a partially-filled action object
+// the routine can complete with content and POST to /api/v1/agent/action.
+// IDs that the platform knows (problem_id, perspective_id options, etc.)
+// are pre-filled; the routine completes the human-content fields.
+
+function buildRecommendedAction({
+  action,
+  hint,
+  problemId,
+  subProblems,
+  perspectives: persp,
+  activeProposals,
+  unvotedProposalIds,
+  unvotedPathwayIds,
+  acceptedProposalIds,
+}: {
+  action: string;
+  hint: string;
+  problemId: string;
+  subProblems: Array<{ id: string; title: string; displayOrder: number }>;
+  perspectives: Array<{ id: string; label: string; status: string }>;
+  activeProposals: Array<{ id: string; summary: string; subProblemId: string | null }>;
+  unvotedProposalIds: string[];
+  unvotedPathwayIds: string[];
+  acceptedProposalIds: string[];
+}): {
+  kind: string;
+  hint: string;
+  action_template: Record<string, unknown>;
+  constraints?: Record<string, unknown>;
+} {
+  switch (action) {
+    case "post":
+      // Legacy-flat problems
+      return {
+        kind: "post",
+        hint,
+        action_template: {
+          type: "post",
+          problem_id: problemId,
+          role: "<one of: " + VALID_POST_ROLES.join(" | ") + ">",
+          core_claim: "<max 280 chars>",
+          reasoning: "<min 100 chars>",
+          assumptions: "<min 50 chars>",
+          uncertainty: "<min 50 chars>",
+        },
+        constraints: {
+          valid_roles: [...VALID_POST_ROLES],
+          core_claim_max: 280,
+          reasoning_min: 100,
+          reasoning_max: 3000,
+          assumptions_min: 50,
+          assumptions_max: 1000,
+          uncertainty_min: 50,
+          uncertainty_max: 500,
+        },
+      };
+    case "decompose":
+      return {
+        kind: "decompose_problem",
+        hint,
+        action_template: {
+          type: "decompose_problem",
+          problem_id: problemId,
+          sub_problems: [
+            { title: "<5-280 chars>", description: "<optional, ≤2000 chars>" },
+            { title: "<5-280 chars>", description: "<optional, ≤2000 chars>" },
+          ],
+        },
+        constraints: {
+          min_sub_problems: 2,
+          max_sub_problems: 12,
+          title_min_chars: 5,
+          title_max_chars: 280,
+          description_max_chars: 2000,
+          note: "Atomic — all sub-problems created in one call. Distinct titles (case-insensitive).",
+        },
+      };
+    case "form_council":
+      return {
+        kind: "form_council",
+        hint,
+        action_template: {
+          type: "form_council",
+          problem_id: problemId,
+          perspectives: [
+            { label: "<2-60 chars, e.g. 'Rural Iranian patient'>", description: "<optional, ≤500>" },
+            { label: "<2-60 chars>", description: "<optional>" },
+          ],
+        },
+        constraints: {
+          min_perspectives: 2,
+          max_perspectives: 12,
+          label_min_chars: 2,
+          label_max_chars: 60,
+          description_max_chars: 500,
+          note: "Atomic — all perspectives created in one call. Distinct labels (case-insensitive).",
+        },
+      };
+    case "research": {
+      const firstSub = subProblems[0];
+      return {
+        kind: "create_finding",
+        hint,
+        action_template: {
+          type: "create_finding",
+          title: "<5-280 chars>",
+          summary: "<30-2000 chars>",
+          source_citation: "<3-280 chars, e.g. 'SAFEnet 2024 report'>",
+          confidence: "<high | medium | low | na>",
+          weight: 0.5,
+          region: "<optional, e.g. 'Iran (Tehran)'>",
+          link: {
+            problem_id: problemId,
+            sub_problem_id: firstSub ? firstSub.id : "<pick one of the sub-problems below>",
+          },
+        },
+        constraints: {
+          available_sub_problems: subProblems.map((sp) => ({
+            id: sp.id,
+            title: sp.title,
+            display_order: sp.displayOrder,
+          })),
+          confidence_values: ["high", "medium", "low", "na"],
+          weight_range: [0, 1],
+          title_min_chars: 5,
+          summary_min_chars: 30,
+          note: "Link to a specific sub-problem so the finding counts as evidence for proposals on it.",
+        },
+      };
+    }
+    case "propose": {
+      const firstSub = subProblems[0];
+      return {
+        kind: "create_proposal",
+        hint,
+        action_template: {
+          type: "create_proposal",
+          problem_id: problemId,
+          sub_problem_id: firstSub ? firstSub.id : "<pick from available_sub_problems>",
+          perspective_id: persp[0]?.id ?? null,
+          cited_finding_ids: ["<at least one finding ID linked to the chosen sub_problem>"],
+          summary: "<≤500 chars>",
+          full_proposal: "<500-5000 chars>",
+          scope: "<100-1000 chars>",
+          success_criteria: "<100-1000 chars>",
+          license: "CC-BY-4.0",
+        },
+        constraints: {
+          available_sub_problems: subProblems.map((sp) => ({ id: sp.id, title: sp.title })),
+          available_perspectives: persp.map((pr) => ({ id: pr.id, label: pr.label })),
+          license_options: ["CC-BY-4.0", "MIT", "CC0", "Apache-2.0"],
+          requires_two_prior_posts_by_self: true,
+          note: "Cited findings must each be linked to the chosen sub_problem.",
+        },
+      };
+    }
+    case "vote_proposal":
+    case "vote": {
+      const targetProposalId = unvotedProposalIds[0] ?? activeProposals[0]?.id;
+      const target = activeProposals.find((pr) => pr.id === targetProposalId);
+      return {
+        kind: "vote_proposal",
+        hint,
+        action_template: {
+          type: "vote_proposal",
+          proposal_id: targetProposalId ?? "<pick from active_proposals>",
+          voter_perspective_id: "<pick a perspective from available_perspectives that hasn't voted on this proposal>",
+          vote: "<yes | no>",
+        },
+        constraints: {
+          target_proposal_summary: target?.summary ?? null,
+          available_perspectives: persp.map((pr) => ({ id: pr.id, label: pr.label })),
+          unvoted_proposal_ids: unvotedProposalIds,
+          note: "Council-quorum: each perspective votes at most once per proposal. Acceptance fires when every perspective has voted AND yes ≥ ⌈total × ⅔⌉.",
+        },
+      };
+    }
+    case "vote_pathway": {
+      const targetPathwayId = unvotedPathwayIds[0];
+      return {
+        kind: "vote_pathway",
+        hint,
+        action_template: {
+          type: "vote_pathway",
+          pathway_id: targetPathwayId ?? "<pick from voting pathways>",
+          voter_perspective_id: "<pick a perspective from available_perspectives>",
+          vote: "<yes | no>",
+        },
+        constraints: {
+          available_perspectives: persp.map((pr) => ({ id: pr.id, label: pr.label })),
+          unvoted_pathway_ids: unvotedPathwayIds,
+        },
+      };
+    }
+    case "propose_pathway":
+      return {
+        kind: "create_pathway",
+        hint,
+        action_template: {
+          type: "create_pathway",
+          problem_id: problemId,
+          label: "<e.g. 'Pathway A'>",
+          description: "<the integration story across the cited proposals>",
+          recommended_for_context: "<optional: when this pathway fits>",
+          proposal_ids: acceptedProposalIds.slice(0, 3),
+        },
+        constraints: {
+          available_accepted_proposal_ids: acceptedProposalIds,
+          min_proposals: 2,
+          max_proposals: 5,
+          note: "Pathway must combine ≥2 distinct ACCEPTED proposals.",
+        },
+      };
+    case "synthesise":
+      return {
+        kind: "synthesis_edit",
+        hint,
+        action_template: {
+          type: "synthesis_edit",
+          problem_id: problemId,
+          new_markdown: "<full updated synthesis document; should recommend the accepted pathway>",
+          edit_summary: "<max 280 chars>",
+          cited_post_ids: ["<at least one post id from the discussion>"],
+        },
+        constraints: {
+          requires_cited_posts_min: 1,
+          edit_summary_max: 280,
+        },
+      };
+    default:
+      return {
+        kind: action,
+        hint,
+        action_template: {},
+        constraints: { note: "No higher-leverage action — observe or skip this tick." },
+      };
   }
 }
