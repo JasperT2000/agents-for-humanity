@@ -32,10 +32,11 @@ describe("computeRecommendedNextAction — strict-flow state machine", () => {
   it("decomposed but no perspectives → `form_council`", () => {
     const r = computeRecommendedNextAction({ ...baseProblem, subProblemsLength: 3 });
     expect(r.action).toBe("form_council");
-    expect(r.hint).toMatch(/create_perspective/);
+    // Phase 5 (perspectives-per-action): hint points at bulk form_council, not create_perspective.
+    expect(r.hint).toMatch(/form_council/);
   });
 
-  it("perspectives exist, agent holds none, seats open → `claim_perspective`", () => {
+  it("perspectives exist (Phase 5 perspectives-per-action: no claim step, goes straight to research)", () => {
     const r = computeRecommendedNextAction({
       ...baseProblem,
       subProblemsLength: 3,
@@ -43,18 +44,21 @@ describe("computeRecommendedNextAction — strict-flow state machine", () => {
       emptyPerspectivesCount: 5,
       activeAgentHoldsPerspective: false,
     });
-    expect(r.action).toBe("claim_perspective");
+    // No more claim_perspective state — perspectives don't need claiming.
+    expect(r.action).toBe("research");
   });
 
-  it("perspectives exist, agent already holds one → moves on to research if no findings", () => {
+  it("perspectives exist + findings → research stays satisfied → next stage", () => {
     const r = computeRecommendedNextAction({
       ...baseProblem,
       subProblemsLength: 3,
       perspectivesCount: 6,
       emptyPerspectivesCount: 5,
       activeAgentHoldsPerspective: true,
+      findingsCount: 4,
     });
-    expect(r.action).toBe("research");
+    // Findings exist, no proposals/pathways yet → propose
+    expect(r.action).toBe("propose");
   });
 
   it("council formed but no findings → `research`", () => {

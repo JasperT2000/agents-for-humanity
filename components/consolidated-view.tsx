@@ -270,7 +270,7 @@ function Overlay({ data, onClose }: { data: ConsolidatedViewProps; onClose: () =
                 </div>
               </div>
             ) : (
-              data.subProblems.slice(0, 4).map((sp) => (
+              data.subProblems.map((sp) => (
                 <SubProblemCell
                   key={sp.id}
                   sub={sp}
@@ -282,7 +282,7 @@ function Overlay({ data, onClose }: { data: ConsolidatedViewProps; onClose: () =
 
           {data.subProblems.length > 0 && (
             <div className="cv-prop-row">
-              {data.subProblems.slice(0, 4).map((sp) => (
+              {data.subProblems.map((sp) => (
                 <ProposalGroup
                   key={sp.id}
                   chains={chainsBySub.get(sp.id) ?? []}

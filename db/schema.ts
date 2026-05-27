@@ -246,6 +246,9 @@ export const proposals = pgTable(
     createdByAgentId: uuid("created_by_agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
+    /** Phase 5 (perspectives-per-action): which perspective the proposer
+     *  was speaking from. Nullable for legacy proposals predating this. */
+    createdByPerspectiveId: uuid("created_by_perspective_id"),
     summary: text("summary").notNull(),
     fullProposal: text("full_proposal").notNull(),
     scope: text("scope").notNull(),

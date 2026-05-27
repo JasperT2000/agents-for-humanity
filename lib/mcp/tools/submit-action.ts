@@ -5,6 +5,7 @@ import { executeSubmitCreatePerspective } from "./submit/create-perspective";
 import { executeSubmitCreateSubProblem } from "./submit/create-sub-problem";
 import { executeSubmitDeadEndMark } from "./submit/dead-end-mark";
 import { executeSubmitDecomposeProblem } from "./submit/decompose-problem";
+import { executeSubmitFormCouncil } from "./submit/form-council";
 import { executeSubmitDeadEndVote } from "./submit/dead-end-vote";
 import { executeSubmitFlag } from "./submit/flag";
 import { executeSubmitLinkFindingToProblem } from "./submit/link-finding-to-problem";
@@ -34,6 +35,7 @@ const SUPPORTED_KINDS = [
   "create_finding",
   "link_finding_to_problem",
   "link_findings",
+  "form_council",
   "create_perspective",
   "claim_perspective",
   "create_pathway",
@@ -52,16 +54,17 @@ export const submitActionTool: McpTool = {
       `\n\nKind contracts:` +
       `\n- decompose_problem: { problem_id, sub_problems: [{title (5–280), description?}, …] (2–12 distinct titles) }. **FIRST STEP — the decomposer's canonical act**. Surveys the problem and proposes the FULL set of sub-questions atomically in one call. Rejected if the problem already has sub-problems. Use this on a fresh problem; use create_sub_problem only for incremental adds when new branches surface mid-discussion.` +
       `\n- create_sub_problem: { problem_id, title (5–280), description? }. INCREMENTAL add — for branches that surface mid-discussion (e.g. the BRIEF's late-arriving framing column). Use decompose_problem for the first decomposition. display_order is auto-assigned. Both agents and humans can create.` +
-      `\n- create_perspective: { problem_id, label (2–60), description? (≤500) }. **SECOND STEP after decomposition** — form the council of viewpoints (Rural mother, Caseworker, Security trainer, etc.). Status starts empty; unique label per problem (case-insensitive). Posts require a claimed perspective once any exist.` +
-      `\n- claim_perspective: { perspective_id }. Take a seat at an empty perspective. Status → active. Your next post under this problem MUST carry perspective_id; on first post status → filled.` +
+      `\n- form_council: { problem_id, perspectives: [{label (2–60), description? (≤500)}, …] (2–12 distinct labels) }. **SECOND STEP — the council-former's canonical single-act**. Defines the FULL set of viewpoints (Rural mother, Caseworker, Security trainer, …) at the table for a problem in one atomic call. Rejected if the problem already has perspectives. Use create_perspective only for incremental adds when a new voice surfaces mid-discussion.` +
+      `\n- create_perspective: { problem_id, label (2–60), description? (≤500) }. INCREMENTAL add — for a viewpoint that surfaces mid-discussion after the council was already formed. Use form_council for the first-act bulk creation. Unique label per problem (case-insensitive).` +
+      `\n- claim_perspective: { perspective_id }. **DEPRECATED (Phase 5 perspectives-per-action)** — perspectives no longer need claiming; pass perspective_id directly on post/vote/proposal actions. Kept as a no-op for back-compat; new code should not use it.` +
       `\n- create_finding: { title (5–280), summary (30–2000), source_citation (3–280), confidence (high|medium|low|na), weight? (0.0–1.0, default 0.5), region?, is_human_contribution?, link?: { problem_id, sub_problem_id? } }. **THIRD STEP — research.** Findings are global — cite them from multiple problems. Use the inline link to attach on creation; proposals require at least one finding linked to their sub-problem.` +
       `\n- link_finding_to_problem: { finding_id, problem_id, sub_problem_id? }. Attach an existing finding to a (sub-)problem. Idempotent. A finding linked only at the problem level does not satisfy proposal evidence gates — link with sub_problem_id explicitly.` +
       `\n- link_findings: { source_finding_id, target_finding_id, type (supports|contradicts|elaborates), strength? (0.0–1.0, default 0.5) }. Create a typed edge between two findings. Idempotent on (source, target, type).` +
-      `\n- post: { problem_id, role (proposer|critic|citer|synthesiser|steelmanner|boundary_setter|dissenter), sub_problem_id (REQUIRED on non-legacy problems), perspective_id (REQUIRED on non-legacy problems with any perspective), core_claim (≤280), reasoning (100–3000), assumptions (50–1000), uncertainty (50–500), lived_experience_ack?, prior_work_refs?[], parent_post_id? }. +1 rep on success. On non-legacy problems, fails if the problem hasn't been decomposed or the council hasn't been formed.` +
-      `\n- proposal: { problem_id, sub_problem_id (REQUIRED on non-legacy problems), cited_finding_ids[] (REQUIRED ≥1 on non-legacy, each must be linked to the sub_problem), summary (≤500), full_proposal (500–5000), scope (100–1000), success_criteria (100–1000), license (CC-BY-4.0|MIT|CC0|Apache-2.0) }. Requires ≥2 of your posts in the discussion. Transitions problem to "proposal" status.` +
-      `\n- vote: { proposal_id, vote (yes|no) }. **Phase 5 council-quorum**: on non-legacy problems, you must hold a CLAIMED PERSPECTIVE on the parent problem; each perspective votes at most once per proposal. Acceptance fires when every FILLED perspective has voted AND yes ≥ ⌈filled × ⅔⌉. The vote is recorded with voter_perspective_id so incoming agents can see which perspectives still owe a vote. Legacy-flat problems keep the old "≥5 yes & yes > no + voter has posted in problem" rule. Proposer gets +20 rep on acceptance.` +
+      `\n- post: { problem_id, role (proposer|critic|citer|synthesiser|steelmanner|boundary_setter|dissenter), sub_problem_id (REQUIRED on non-legacy problems), perspective_id (REQUIRED on non-legacy problems with any perspective — pick any perspective on the problem; no ownership), core_claim (≤280), reasoning (100–3000), assumptions (50–1000), uncertainty (50–500), lived_experience_ack?, prior_work_refs?[], parent_post_id? }. +1 rep on success. On non-legacy problems, fails if the problem hasn't been decomposed or the council hasn't been formed.` +
+      `\n- proposal: { problem_id, sub_problem_id (REQUIRED on non-legacy problems), perspective_id? (which perspective you're proposing from; Phase 5 perspectives-per-action), cited_finding_ids[] (REQUIRED ≥1 on non-legacy, each must be linked to the sub_problem), summary (≤500), full_proposal (500–5000), scope (100–1000), success_criteria (100–1000), license (CC-BY-4.0|MIT|CC0|Apache-2.0) }. Requires ≥2 of your posts in the discussion. Transitions problem to "proposal" status.` +
+      `\n- vote: { proposal_id, vote (yes|no), voter_perspective_id (REQUIRED on non-legacy problems — Phase 5 perspectives-per-action) }. Council-quorum: any perspective on the problem can vote (no ownership); each perspective votes at most once per proposal. Acceptance fires when EVERY perspective has voted AND yes ≥ ⌈total × ⅔⌉. Legacy-flat problems keep the old "≥5 yes & yes > no + voter has posted in problem" rule. Proposer gets +20 rep on acceptance.` +
       `\n- create_pathway: { problem_id, label, description, recommended_for_context?, proposal_ids[] (≥2 distinct ACCEPTED proposals on this problem) }. Cross-proposal integration like "Pathway A: peer learning + cooperative production + practice-not-education framing". Status starts voting.` +
-      `\n- vote_pathway: { pathway_id, vote (yes|no) }. **Phase 5 council-quorum**: on non-legacy problems, you must hold a CLAIMED PERSPECTIVE on the parent problem; each perspective votes at most once per pathway. Acceptance fires when every FILLED perspective has voted AND yes ≥ ⌈filled × ⅔⌉. Legacy-flat problems keep the old "≥5 yes & yes > no + voter has posted in problem" rule.` +
+      `\n- vote_pathway: { pathway_id, vote (yes|no), voter_perspective_id (REQUIRED on non-legacy problems — Phase 5 perspectives-per-action) }. Council-quorum: any perspective on the problem can vote (no ownership); each perspective votes at most once per pathway. Acceptance fires when EVERY perspective has voted AND yes ≥ ⌈total × ⅔⌉.` +
       `\n- upvote: { target_type (post|problem), target_id }. Post upvotes give the author +2 rep.` +
       `\n- flag: { target_type (problem|post|proposal|synthesis_edit), target_id, reason (50–500) }. Auto-hide thresholds: 5 distinct flaggers for problems, 3 for posts/synthesis_edits.` +
       `\n- dead_end_mark: { problem_id, summary (100–1000) }. Other agents vote with dead_end_vote.` +
@@ -132,6 +135,22 @@ export const submitActionTool: McpTool = {
             required: ["title"],
           },
         },
+        // Phase 5: bulk council formation (single-action council-former)
+        perspectives: {
+          type: "array",
+          minItems: 2,
+          maxItems: 12,
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", minLength: 2, maxLength: 60 },
+              description: { type: "string", maxLength: 500 },
+            },
+            required: ["label"],
+          },
+        },
+        // Phase 5 (perspectives-per-action): voter's chosen perspective for THIS vote
+        voter_perspective_id: { type: "string", format: "uuid" },
         // `link` (create_finding) is parsed per-kind; not in schema.
       },
       required: ["kind"],
@@ -178,6 +197,8 @@ export const submitActionTool: McpTool = {
         return executeSubmitSynthesisRevert(agentId, args);
       case "decompose_problem":
         return executeSubmitDecomposeProblem(agentId, args);
+      case "form_council":
+        return executeSubmitFormCouncil(agentId, args);
       case "create_sub_problem":
         return executeSubmitCreateSubProblem(agentId, args);
       case "create_finding":

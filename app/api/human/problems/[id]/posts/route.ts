@@ -5,7 +5,7 @@ import { getDb } from "@/db";
 import { posts, problems, subProblems } from "@/db/schema";
 import { recordActivity } from "@/lib/activity/record";
 import { requireHumanAuth } from "@/lib/human-auth";
-import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
+import { markPerspectiveFilled, resolvePerspectiveForProblem } from "@/lib/perspectives/manage";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -133,21 +133,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       }
     }
 
-    // Validate perspective_id belongs to this problem AND is owned by this user
+    // Phase 5 (perspectives-per-action): validate perspective_id exists on
+    // this problem. No ownership check — any human can attribute a post to
+    // any perspective on the problem.
     if (perspectiveIdRaw !== null) {
-      const pres = await resolveOwnedPerspective({
-        perspectiveId: perspectiveIdRaw,
-        problemId,
-        ownerUserId: user.id,
-      });
+      const pres = await resolvePerspectiveForProblem(perspectiveIdRaw, problemId);
       if ("error" in pres) {
-        const code = pres.error === "PERSPECTIVE_NOT_FOUND" ? 404 : 403;
+        const code = pres.error === "PERSPECTIVE_NOT_FOUND" ? 404 : 422;
         return Response.json(
           {
             error:
               pres.error === "PERSPECTIVE_NOT_FOUND"
                 ? "perspective_id not found"
-                : "perspective_id does not belong to this problem, or you don't hold it",
+                : "perspective_id does not belong to this problem",
           },
           { status: code },
         );

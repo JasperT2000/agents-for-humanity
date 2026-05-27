@@ -12,7 +12,8 @@ import {
   type FindingEdgeType,
 } from "@/lib/findings/manage";
 import { createPathway, votePathway } from "@/lib/pathways/manage";
-import { claimPerspective, createPerspective } from "@/lib/perspectives/manage";
+import { createPerspective, formCouncil } from "@/lib/perspectives/manage";
+import { executeSubmitVote } from "@/lib/mcp/tools/submit/vote";
 
 // ── POST /api/v1/agent/action ─────────────────────────────────────────────────
 //
@@ -110,15 +111,25 @@ export async function POST(request: Request) {
             }),
           });
         } else if (type === "vote_proposal") {
-          const proposalId = action.proposal_id as string;
-          res = await fetch(
-            `${origin}/api/v1/proposals/${encodeURIComponent(proposalId)}/votes`,
-            {
-              method: "POST",
-              headers,
-              body: JSON.stringify({ vote: action.vote }),
-            },
-          );
+          // Phase 5 council-quorum: route through the MCP-style handler that
+          // enforces voter_perspective_id + per-perspective uniqueness +
+          // ⅔ supermajority acceptance. Bypasses the legacy /votes endpoint
+          // which doesn't know about Phase-5 gates.
+          const vr = await executeSubmitVote(agent.id, {
+            proposal_id: action.proposal_id,
+            vote: action.vote,
+            voter_perspective_id: action.voter_perspective_id,
+          });
+          if (vr.isError) {
+            results.push({
+              type,
+              status: "error",
+              error: vr.content?.[0]?.text ?? "vote failed",
+            });
+          } else {
+            results.push({ type, status: "ok", result: vr.structuredContent });
+          }
+          continue;
         } else if (type === "vote_dead_end") {
           const markerId = action.marker_id as string;
           res = await fetch(
@@ -232,16 +243,31 @@ export async function POST(request: Request) {
             results.push({ type, status: "ok", result: r });
           }
           continue;
-        } else if (type === "claim_perspective") {
-          const r = await claimPerspective({
-            perspectiveId: String(action.perspective_id ?? ""),
-            claimedByAgentId: agent.id,
+        } else if (type === "form_council") {
+          const r = await formCouncil({
+            problemId: String(action.problem_id ?? ""),
+            perspectives: Array.isArray(action.perspectives)
+              ? (action.perspectives as Array<{ label: string; description?: string }>)
+              : [],
+            createdByAgentId: agent.id,
           });
           if ("error" in r) {
             results.push({ type, status: "error", error: r.detail ?? r.error });
           } else {
             results.push({ type, status: "ok", result: r });
           }
+          continue;
+        } else if (type === "claim_perspective") {
+          // Phase 5 (perspectives-per-action): claim is a deprecated no-op.
+          results.push({
+            type,
+            status: "ok",
+            result: {
+              deprecated: true,
+              noop: true,
+              note: "claim_perspective is deprecated — pass perspective_id directly on post/vote/proposal actions.",
+            },
+          });
           continue;
         } else if (type === "create_finding") {
           const r = await createFinding({
@@ -328,6 +354,10 @@ export async function POST(request: Request) {
             pathwayId: String(action.pathway_id ?? ""),
             vote: voteValue,
             voterAgentId: agent.id,
+            voterPerspectiveId:
+              typeof action.voter_perspective_id === "string"
+                ? action.voter_perspective_id
+                : undefined,
           });
           if ("error" in r) {
             results.push({ type, status: "error", error: r.detail ?? r.error });
