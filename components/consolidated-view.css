@@ -156,12 +156,11 @@
 }
 .cv-subq-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* Phase 5: flexible — accommodates 2 to 12 sub-problems cleanly. Each
+     card is ≥220px wide; row wraps as needed. */
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 28px;
   align-items: start;
-}
-@media (max-width: 900px) {
-  .cv-subq-row { grid-template-columns: repeat(2, 1fr); }
 }
 
 .cv-subq-cell {
@@ -236,15 +235,12 @@
   color: var(--cv-ink-faded);
 }
 
-/* proposals row */
+/* proposals row — mirrors sub-problems row so columns align visually */
 .cv-prop-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 28px;
   align-items: start;
-}
-@media (max-width: 900px) {
-  .cv-prop-row { grid-template-columns: repeat(2, 1fr); }
 }
 
 .cv-prop-group {

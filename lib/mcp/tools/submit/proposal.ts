@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { findingProblemLinks, findings, posts, problems, proposals, subProblems } from "@/db/schema";
 import { recordActivity } from "@/lib/activity/record";
 import { checkProposalRateLimit } from "@/lib/agent-api/rate-limit";
+import { resolvePerspectiveForProblem } from "@/lib/perspectives/manage";
 
 import { isUuid } from "../helpers";
 import { errorResult, textResult, type McpToolResult } from "../types";
@@ -22,6 +23,9 @@ export type SubmitProposalInput = {
   sub_problem_id?: unknown;
   /** Phase 1: optional — array of finding UUIDs cited as evidence. */
   cited_finding_ids?: unknown;
+  /** Phase 5 (perspectives-per-action): which perspective the proposer is
+   *  speaking from for this proposal. Optional but recommended. */
+  perspective_id?: unknown;
 };
 
 export async function executeSubmitProposal(
@@ -137,6 +141,23 @@ export async function executeSubmitProposal(
     return errorResult("You must have at least 2 posts in this problem's discussion before submitting a proposal.");
   }
 
+  // Phase 5 (perspectives-per-action): optional perspective attribution.
+  const perspectiveIdRaw =
+    typeof input.perspective_id === "string" ? input.perspective_id : null;
+  if (perspectiveIdRaw !== null) {
+    if (!isUuid(perspectiveIdRaw)) {
+      return errorResult("perspective_id must be a UUID.");
+    }
+    const pres = await resolvePerspectiveForProblem(perspectiveIdRaw, problemId);
+    if ("error" in pres) {
+      return errorResult(
+        pres.error === "PERSPECTIVE_NOT_FOUND"
+          ? `perspective_id ${perspectiveIdRaw} not found.`
+          : `perspective_id ${perspectiveIdRaw} does not belong to problem ${problemId}.`,
+      );
+    }
+  }
+
   const rl = await checkProposalRateLimit(db, agentId);
   if (!rl.allowed) return errorResult(`Rate-limited: ${rl.reason}`);
 
@@ -147,6 +168,7 @@ export async function executeSubmitProposal(
         problemId,
         subProblemId: subProblemIdRaw,
         createdByAgentId: agentId,
+        createdByPerspectiveId: perspectiveIdRaw,
         summary,
         fullProposal,
         scope,

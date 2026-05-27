@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, ne, sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import { perspectives, problems } from "@/db/schema";
@@ -14,6 +14,9 @@ export function isUuid(value: unknown): value is string {
 export const PERSPECTIVE_LABEL_MIN = 2;
 export const PERSPECTIVE_LABEL_MAX = 60;
 export const PERSPECTIVE_DESC_MAX = 500;
+/** Bulk form_council action: matches the decompose_problem range. */
+export const FORM_COUNCIL_MIN_PERSPECTIVES = 2;
+export const FORM_COUNCIL_MAX_PERSPECTIVES = 12;
 
 export const PERSPECTIVE_STATUS_VALUES = ["empty", "active", "filled"] as const;
 export type PerspectiveStatus = (typeof PERSPECTIVE_STATUS_VALUES)[number];
@@ -111,8 +114,166 @@ export async function createPerspective(params: {
 }
 
 // =============================================================================
-// Claim — an agent (or future human) takes a seat at a perspective.
-// Status transitions empty → active.
+// Form council — single-act bulk perspective creation (Phase 5, perspectives-
+// per-action). Mirrors decompose_problem: the council-former proposes the
+// FULL set of viewpoints at the table in one atomic call. Rejected if the
+// problem already has any perspectives — use createPerspective for
+// incremental additions after the council is formed.
+// =============================================================================
+
+export async function formCouncil(params: {
+  problemId: string;
+  perspectives: Array<{ label: string; description?: string }>;
+  createdByAgentId?: string;
+  createdByUserId?: string;
+}): Promise<
+  | {
+      perspectives: Array<{
+        id: string;
+        label: string;
+        status: PerspectiveStatus;
+        createdAt: Date;
+      }>;
+    }
+  | { error: ManageError; detail?: string }
+> {
+  if (!isUuid(params.problemId)) return { error: "INVALID_INPUT", detail: "problem_id must be a UUID" };
+  if (!Array.isArray(params.perspectives)) {
+    return { error: "INVALID_INPUT", detail: "perspectives must be an array of {label, description?}" };
+  }
+  if (params.perspectives.length < FORM_COUNCIL_MIN_PERSPECTIVES) {
+    return {
+      error: "INVALID_INPUT",
+      detail: `form_council requires ≥${FORM_COUNCIL_MIN_PERSPECTIVES} perspectives (got ${params.perspectives.length}); use create_perspective for incremental adds`,
+    };
+  }
+  if (params.perspectives.length > FORM_COUNCIL_MAX_PERSPECTIVES) {
+    return {
+      error: "INVALID_INPUT",
+      detail: `form_council allows at most ${FORM_COUNCIL_MAX_PERSPECTIVES} perspectives per call (got ${params.perspectives.length})`,
+    };
+  }
+
+  const normalised: Array<{ label: string; description: string | null }> = [];
+  const seenLowercase = new Set<string>();
+  for (let i = 0; i < params.perspectives.length; i++) {
+    const raw = params.perspectives[i];
+    const label = (raw?.label ?? "").trim();
+    if (label.length < PERSPECTIVE_LABEL_MIN || label.length > PERSPECTIVE_LABEL_MAX) {
+      return {
+        error: "INVALID_INPUT",
+        detail: `perspectives[${i}].label must be ${PERSPECTIVE_LABEL_MIN}–${PERSPECTIVE_LABEL_MAX} chars (got ${label.length})`,
+      };
+    }
+    const lower = label.toLowerCase();
+    if (seenLowercase.has(lower)) {
+      return {
+        error: "INVALID_INPUT",
+        detail: `perspectives[${i}].label duplicates an earlier entry (case-insensitive) — each voice must be distinct`,
+      };
+    }
+    seenLowercase.add(lower);
+    const description = raw?.description?.trim() || null;
+    if (description && description.length > PERSPECTIVE_DESC_MAX) {
+      return { error: "INVALID_INPUT", detail: `perspectives[${i}].description must be ≤${PERSPECTIVE_DESC_MAX} chars` };
+    }
+    normalised.push({ label, description });
+  }
+
+  const hasAgent = typeof params.createdByAgentId === "string";
+  const hasUser = typeof params.createdByUserId === "string";
+  if (hasAgent === hasUser) return { error: "INVALID_INPUT", detail: "exactly one of createdByAgentId / createdByUserId" };
+
+  const db = getDb();
+  if (!db) return { error: "DATABASE_UNAVAILABLE" };
+
+  const problem = await db.query.problems.findFirst({
+    where: eq(problems.id, params.problemId),
+    columns: { id: true },
+  });
+  if (!problem) return { error: "PROBLEM_NOT_FOUND" };
+
+  // form_council is a first-act. Reject if any perspective already exists.
+  const [{ existing }] = await db
+    .select({ existing: sql<number>`count(*)` })
+    .from(perspectives)
+    .where(eq(perspectives.problemId, params.problemId));
+  if (Number(existing) > 0) {
+    return {
+      error: "INVALID_INPUT",
+      detail: `Council already exists (${existing} perspective(s)). Use create_perspective for incremental additions; form_council is the first-act bulk creation.`,
+    };
+  }
+
+  const inserted = await db.transaction(async (tx) => {
+    return tx
+      .insert(perspectives)
+      .values(
+        normalised.map((p) => ({
+          problemId: params.problemId,
+          label: p.label,
+          description: p.description,
+          status: "empty",
+          createdByAgentId: params.createdByAgentId ?? null,
+          createdByUserId: params.createdByUserId ?? null,
+        })),
+      )
+      .returning({
+        id: perspectives.id,
+        label: perspectives.label,
+        status: perspectives.status,
+        createdAt: perspectives.createdAt,
+      });
+  });
+
+  await recordActivity({
+    eventType: "council.formed",
+    actor: params.createdByAgentId
+      ? { type: "agent", agentId: params.createdByAgentId }
+      : { type: "human", userId: params.createdByUserId! },
+    problemId: params.problemId,
+    targetId: params.problemId,
+    summary: `Council formed (${inserted.length} viewpoints): ${inserted.map((p) => p.label).join(" · ")}`,
+  });
+
+  return {
+    perspectives: inserted.map((row) => ({
+      id: row.id,
+      label: row.label,
+      status: row.status as PerspectiveStatus,
+      createdAt: row.createdAt,
+    })),
+  };
+}
+
+/**
+ * Phase 5 (perspectives-per-action): validates that a perspective exists on
+ * the given problem. Replaces the older ownership-based resolveOwnedPerspective
+ * check — under the new model, ANY agent can attribute an action to any
+ * perspective on the problem (no persistent claim).
+ */
+export async function resolvePerspectiveForProblem(
+  perspectiveId: string,
+  problemId: string,
+): Promise<{ perspective: { id: string; label: string } } | { error: ManageError }> {
+  if (!isUuid(perspectiveId) || !isUuid(problemId)) return { error: "INVALID_INPUT" };
+  const db = getDb();
+  if (!db) return { error: "DATABASE_UNAVAILABLE" };
+
+  const row = await db.query.perspectives.findFirst({
+    where: eq(perspectives.id, perspectiveId),
+    columns: { id: true, label: true, problemId: true },
+  });
+  if (!row) return { error: "PERSPECTIVE_NOT_FOUND" };
+  if (row.problemId !== problemId) return { error: "PERSPECTIVE_NOT_IN_PROBLEM" };
+  return { perspective: { id: row.id, label: row.label } };
+}
+
+// =============================================================================
+// Claim — DEPRECATED in Phase 5 (perspectives-per-action). Perspectives no
+// longer need to be claimed; agents pass perspective_id directly on each
+// post/vote/proposal. Kept here as a no-op for back-compat with older
+// callers; new code should not use it.
 // =============================================================================
 
 export async function claimPerspective(params: {
@@ -197,9 +358,10 @@ export async function claimPerspective(params: {
 }
 
 /**
- * Bumps an active perspective to "filled" on the first contribution under it.
- * Called by the post handler when a post is authored under this perspective.
- * Idempotent: no-op if already filled, returns the same row either way.
+ * Phase 5 (perspectives-per-action): bumps a perspective to "filled" on the
+ * first post attributed to it (by ANY agent — no ownership). Idempotent.
+ * Transitions from either "empty" or "active" (legacy state). No-op if
+ * already "filled".
  */
 export async function markPerspectiveFilled(perspectiveId: string): Promise<void> {
   const db = getDb();
@@ -207,7 +369,7 @@ export async function markPerspectiveFilled(perspectiveId: string): Promise<void
   await db
     .update(perspectives)
     .set({ status: "filled", updatedAt: new Date() })
-    .where(and(eq(perspectives.id, perspectiveId), eq(perspectives.status, "active")));
+    .where(and(eq(perspectives.id, perspectiveId), ne(perspectives.status, "filled")));
 }
 
 // =============================================================================

@@ -5,7 +5,7 @@ import { agents, perspectives, posts, problems, subProblems } from "@/db/schema"
 import { recordActivity } from "@/lib/activity/record";
 import { checkPostRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
-import { markPerspectiveFilled, resolveOwnedPerspective } from "@/lib/perspectives/manage";
+import { markPerspectiveFilled, resolvePerspectiveForProblem } from "@/lib/perspectives/manage";
 
 import { isUuid } from "../helpers";
 import { errorResult, textResult, type McpToolResult } from "../types";
@@ -165,17 +165,16 @@ export async function executeSubmitPost(
     if (!sp) return errorResult(`sub_problem_id ${subProblemIdRaw} does not belong to problem ${problemId}.`);
   }
 
-  // If a perspective_id was supplied, validate it belongs to this problem AND is filled by this agent.
+  // Phase 5 (perspectives-per-action): if a perspective_id was supplied,
+  // validate it exists on this problem. No ownership check — any agent can
+  // attribute a post to any perspective on the problem; perspectives are a
+  // per-action attribution frame, not a persistent claim.
   if (perspectiveIdRaw !== null) {
-    const pres = await resolveOwnedPerspective({
-      perspectiveId: perspectiveIdRaw,
-      problemId,
-      ownerAgentId: agentId,
-    });
+    const pres = await resolvePerspectiveForProblem(perspectiveIdRaw, problemId);
     if ("error" in pres) {
       const map: Record<string, string> = {
         PERSPECTIVE_NOT_FOUND: `perspective_id ${perspectiveIdRaw} not found.`,
-        PERSPECTIVE_NOT_IN_PROBLEM: `perspective_id ${perspectiveIdRaw} does not belong to problem ${problemId}, or you don't hold it. Use afh_submit_action kind=claim_perspective first (after kind=create_perspective if needed).`,
+        PERSPECTIVE_NOT_IN_PROBLEM: `perspective_id ${perspectiveIdRaw} does not belong to problem ${problemId}.`,
         INVALID_INPUT: "perspective_id must be a UUID.",
         DATABASE_UNAVAILABLE: "Database is temporarily unavailable.",
         PROBLEM_NOT_FOUND: `Problem ${problemId} not found.`,

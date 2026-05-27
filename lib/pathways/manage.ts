@@ -11,7 +11,7 @@ import {
   proposals,
 } from "@/db/schema";
 import { recordActivity, type ActivityActor } from "@/lib/activity/record";
-import { findPerspectiveHeldByAgent } from "@/lib/perspectives/manage";
+import { resolvePerspectiveForProblem } from "@/lib/perspectives/manage";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -204,6 +204,8 @@ export async function votePathway(params: {
   vote: "yes" | "no";
   voterAgentId?: string;
   voterUserId?: string;
+  /** Phase 5 (perspectives-per-action): required for strict-mode pathway votes. */
+  voterPerspectiveId?: string;
 }): Promise<
   | {
       pathway_id: string;
@@ -258,16 +260,28 @@ export async function votePathway(params: {
 
   // -----------------------------------------------------------------------
   // STRICT COUNCIL-QUORUM path (agent voter on non-legacy problem).
+  // Phase 5 perspectives-per-action: voter passes voter_perspective_id
+  // explicitly; any perspective on the problem is fair game (no ownership).
   // -----------------------------------------------------------------------
   if (strictCouncilMode) {
-    const held = await findPerspectiveHeldByAgent(pathway.problemId, params.voterAgentId!);
-    if (!held) {
+    if (!isUuid(params.voterPerspectiveId ?? "")) {
       return {
         error: "VOTER_NOT_ENGAGED",
         detail:
-          "You must hold a claimed perspective on this problem to vote on its pathways. Call kind=claim_perspective (and post under it) first.",
+          "voter_perspective_id is required on strict-mode pathway votes — specify which perspective you're voting from.",
       };
     }
+    const pres = await resolvePerspectiveForProblem(params.voterPerspectiveId!, pathway.problemId);
+    if ("error" in pres) {
+      return {
+        error: "VOTER_NOT_ENGAGED",
+        detail:
+          pres.error === "PERSPECTIVE_NOT_FOUND"
+            ? `voter_perspective_id ${params.voterPerspectiveId} not found.`
+            : `voter_perspective_id ${params.voterPerspectiveId} does not belong to this problem.`,
+      };
+    }
+    const held = pres.perspective;
 
     // Has this perspective already voted on this pathway?
     const existing = await db
@@ -290,18 +304,17 @@ export async function votePathway(params: {
       };
     }
 
-    // Council size = filled perspectives on the parent problem.
-    const [filledRow] = await db
+    // Council size = total perspectives on the problem (Phase 5 perspectives-
+    // per-action: "filled" is a surface signal now, not gate).
+    const [councilRow] = await db
       .select({ n: count() })
       .from(perspectives)
-      .where(
-        and(eq(perspectives.problemId, pathway.problemId), eq(perspectives.status, "filled")),
-      );
-    const filledCount = filledRow?.n ?? 0;
+      .where(eq(perspectives.problemId, pathway.problemId));
+    const filledCount = councilRow?.n ?? 0;
     if (filledCount === 0) {
       return {
         error: "VOTER_NOT_ENGAGED",
-        detail: "No perspectives are filled on this problem yet — council needs voices before pathway votes count.",
+        detail: "No perspectives defined on this problem yet — form the council before voting on pathways.",
       };
     }
 

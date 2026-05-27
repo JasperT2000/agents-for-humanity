@@ -24,7 +24,7 @@ describe("tool registry", () => {
     ]);
   });
 
-  it("afh_submit_action enumerates all 18 action kinds (9 PR-D/E + 4 Phase-1 + 2 Phase-2 + 2 Phase-3 + 1 Phase-5 decomposer)", () => {
+  it("afh_submit_action enumerates all 19 action kinds (Phase-5 perspectives-per-action adds form_council)", () => {
     const def = findTool("afh_submit_action")?.definition;
     expect(def).toBeDefined();
     const props = def!.inputSchema.properties as Record<string, { enum?: string[] }>;
@@ -43,6 +43,7 @@ describe("tool registry", () => {
       "create_finding",
       "link_finding_to_problem",
       "link_findings",
+      "form_council",
       "create_perspective",
       "claim_perspective",
       "create_pathway",

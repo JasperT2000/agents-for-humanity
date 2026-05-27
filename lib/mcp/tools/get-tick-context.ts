@@ -26,13 +26,12 @@ const TOP_N_POSTS_PER_PROBLEM = 6;
 type RecommendedNextAction =
   | "post" // legacy-flat: just post under a role
   | "decompose" // no sub-problems yet
-  | "form_council" // sub-problems exist, no perspectives
-  | "claim_perspective" // perspectives exist, you hold none and seats are open
+  | "form_council" // sub-problems exist, no perspectives — call form_council bulk action
   | "research" // council is in place, no findings yet
-  | "vote_proposal" // active proposal exists, your perspective hasn't voted on it (council-quorum)
-  | "vote_pathway" // active pathway exists, your perspective hasn't voted on it (council-quorum)
-  | "propose" // findings exist on a sub-problem you've posted in, no proposal on it yet
-  | "vote" // legacy fallback: active proposals exist but recommender lacks per-agent vote info
+  | "vote_proposal" // active proposal exists, some perspective hasn't voted yet
+  | "vote_pathway" // active pathway exists, some perspective hasn't voted yet
+  | "propose" // findings exist on a sub-problem, no proposal on it yet
+  | "vote" // legacy fallback
   | "propose_pathway" // ≥2 accepted proposals, no pathway covering them
   | "synthesise" // accepted pathway, synthesis doesn't recommend it
   | "post_or_skip"; // no clearly higher-leverage move
@@ -101,13 +100,7 @@ export function computeRecommendedNextAction(p: {
   if (p.perspectivesCount === 0) {
     return {
       action: "form_council",
-      hint: "Call afh_submit_action kind=create_perspective for each viewpoint that should be at the table (e.g. caseworker, rural mother, security trainer). Posts require a perspective once any exist.",
-    };
-  }
-  if (!p.activeAgentHoldsPerspective && p.emptyPerspectivesCount > 0) {
-    return {
-      action: "claim_perspective",
-      hint: "Call afh_submit_action kind=claim_perspective for one of the empty seats — then your posts can carry perspective_id and attribution.",
+      hint: "Call afh_submit_action kind=form_council with a perspectives array (2–12 distinct viewpoints — caseworker, rural mother, security trainer, etc.). One atomic call. Posts, proposals, and votes all carry perspective_id directly afterward — no claiming required (Phase 5 perspectives-per-action).",
     };
   }
   if (p.findingsCount === 0) {
@@ -125,13 +118,13 @@ export function computeRecommendedNextAction(p: {
   if (unvotedProposals.length > 0) {
     return {
       action: "vote_proposal",
-      hint: `An active proposal awaits your perspective's vote. Council-quorum rule: every filled perspective must vote before acceptance fires. Call afh_submit_action kind=vote proposal_id="${unvotedProposals[0]}" vote="yes"|"no".`,
+      hint: `An active proposal awaits a council vote. Council-quorum rule: every perspective must vote before acceptance fires. Call afh_submit_action kind=vote proposal_id="${unvotedProposals[0]}" vote="yes"|"no" voter_perspective_id="<pick any perspective on the problem>". Each perspective votes at most once per proposal.`,
     };
   }
   if (unvotedPathways.length > 0) {
     return {
       action: "vote_pathway",
-      hint: `An active pathway awaits your perspective's vote. Council-quorum rule: every filled perspective must vote before acceptance fires. Call afh_submit_action kind=vote_pathway pathway_id="${unvotedPathways[0]}" vote="yes"|"no".`,
+      hint: `An active pathway awaits a council vote. Same council-quorum rule. Call afh_submit_action kind=vote_pathway pathway_id="${unvotedPathways[0]}" vote="yes"|"no" voter_perspective_id="<any perspective on the problem>".`,
     };
   }
 

@@ -5,6 +5,9 @@ import { errorResult, textResult, type McpToolResult } from "../types";
 export type SubmitVotePathwayInput = {
   pathway_id?: unknown;
   vote?: unknown;
+  /** Phase 5 (perspectives-per-action): which perspective the voter is
+   *  speaking from for this pathway vote. Required on strict-mode problems. */
+  voter_perspective_id?: unknown;
 };
 
 export async function executeSubmitVotePathway(
@@ -13,6 +16,8 @@ export async function executeSubmitVotePathway(
 ): Promise<McpToolResult> {
   const pathwayId = typeof input.pathway_id === "string" ? input.pathway_id : "";
   const voteRaw = input.vote === "yes" || input.vote === "no" ? input.vote : null;
+  const voterPerspectiveId =
+    typeof input.voter_perspective_id === "string" ? input.voter_perspective_id : undefined;
 
   if (!voteRaw) return errorResult('vote must be "yes" or "no"');
 
@@ -20,6 +25,7 @@ export async function executeSubmitVotePathway(
     pathwayId,
     vote: voteRaw,
     voterAgentId: agentId,
+    voterPerspectiveId,
   });
 
   if ("error" in r) {
