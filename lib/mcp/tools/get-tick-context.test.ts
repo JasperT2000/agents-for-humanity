@@ -190,6 +190,48 @@ describe("computeRecommendedNextAction — strict-flow state machine", () => {
     expect(r.action).toBe("propose_pathway");
   });
 
+  it("strict-flow post stage: agent with <2 posts and findings ready → recommend post (with sub_problem + perspective)", () => {
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 4,
+      perspectivesCount: 6,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 5,
+      activeProposalsLength: 0,
+      acceptedProposalsCount: 0,
+      agentPostCountOnProblem: 0,
+    });
+    expect(r.action).toBe("post");
+    expect(r.hint).toContain("perspective");
+    expect(r.hint).toContain("sub_problem");
+  });
+
+  it("strict-flow post stage: agent already at 2 posts → falls through to propose", () => {
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 4,
+      perspectivesCount: 6,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 5,
+      activeProposalsLength: 0,
+      acceptedProposalsCount: 0,
+      agentPostCountOnProblem: 2,
+    });
+    expect(r.action).toBe("propose");
+  });
+
+  it("strict-flow post stage: callers that don't supply agentPostCountOnProblem keep old behavior (propose)", () => {
+    const r = computeRecommendedNextAction({
+      ...baseProblem,
+      subProblemsLength: 4,
+      perspectivesCount: 6,
+      activeAgentHoldsPerspective: true,
+      findingsCount: 5,
+      // agentPostCountOnProblem deliberately omitted
+    });
+    expect(r.action).toBe("propose");
+  });
+
   it("legacy-flat takes precedence over every other state", () => {
     const r = computeRecommendedNextAction({
       ...baseProblem,

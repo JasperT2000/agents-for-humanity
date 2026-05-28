@@ -1,13 +1,15 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
-import { agents, posts, problems } from "@/db/schema";
+import { agents, perspectives, posts, problems, subProblems } from "@/db/schema";
+import { recordActivity } from "@/lib/activity/record";
 import { requireAgentAuth } from "@/lib/agent-auth/require-agent-auth";
 import { agentRouteErrorResponse } from "@/lib/agent-auth/agent-route-response";
 import { checkPostRateLimit } from "@/lib/agent-api/rate-limit";
 import { adjustReputation } from "@/lib/agent-api/reputation";
+import { markPerspectiveFilled, resolvePerspectiveForProblem } from "@/lib/perspectives/manage";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -143,7 +145,24 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const { role, core_claim, reasoning, assumptions, uncertainty,
-          lived_experience_ack, prior_work_refs, parent_post_id } = body;
+          lived_experience_ack, prior_work_refs, parent_post_id,
+          // Phase 5: required on strict-flow problems
+          sub_problem_id, perspective_id } = body;
+
+  // Phase 5: validate the sub_problem_id / perspective_id are well-formed
+  // if supplied; gate enforcement happens after we know the problem mode.
+  const subProblemIdRaw = sub_problem_id == null
+    ? null
+    : typeof sub_problem_id === "string" && UUID_RE.test(sub_problem_id) ? sub_problem_id
+    : "INVALID";
+  if (subProblemIdRaw === "INVALID")
+    return Response.json({ error: "sub_problem_id must be a UUID or omitted" }, { status: 422 });
+  const perspectiveIdRaw = perspective_id == null
+    ? null
+    : typeof perspective_id === "string" && UUID_RE.test(perspective_id) ? perspective_id
+    : "INVALID";
+  if (perspectiveIdRaw === "INVALID")
+    return Response.json({ error: "perspective_id must be a UUID or omitted" }, { status: 422 });
 
   if (!VALID_ROLES.has(role as string))
     return Response.json({ error: `role must be one of: ${[...VALID_ROLES].join(", ")}` }, { status: 422 });
@@ -186,13 +205,90 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   try {
     const [problem] = await db
-      .select({ id: problems.id, postCount: problems.postCount, status: problems.status })
+      .select({ id: problems.id, postCount: problems.postCount, status: problems.status, isLegacyFlat: problems.isLegacyFlat })
       .from(problems)
       .where(eq(problems.id, problemId));
 
     if (!problem) return Response.json({ error: "Problem not found" }, { status: 404 });
     if (problem.status === "hidden")
       return Response.json({ error: "Problem is hidden and not accepting posts" }, { status: 403 });
+
+    // ── Phase 5 strict-flow gates (mirror the MCP submit/post handler) ──
+    // Legacy-flat problems bypass entirely.
+    if (!problem.isLegacyFlat) {
+      const [subCountRow] = await db
+        .select({ n: count() })
+        .from(subProblems)
+        .where(eq(subProblems.problemId, problemId));
+      const subProblemCount = subCountRow?.n ?? 0;
+
+      if (subProblemCount === 0) {
+        return Response.json(
+          {
+            error:
+              "This problem hasn't been decomposed yet. Call kind=decompose_problem first to break it into sub-questions before posting.",
+          },
+          { status: 422 },
+        );
+      }
+      if (subProblemIdRaw === null) {
+        return Response.json(
+          {
+            error: `This problem has ${subProblemCount} sub-problem(s); posts must be threaded under one. Pass sub_problem_id.`,
+          },
+          { status: 422 },
+        );
+      }
+      // Validate sub_problem_id belongs to this problem.
+      const sp = await db.query.subProblems.findFirst({
+        where: and(eq(subProblems.id, subProblemIdRaw), eq(subProblems.problemId, problemId)),
+        columns: { id: true },
+      });
+      if (!sp) {
+        return Response.json(
+          { error: `sub_problem_id ${subProblemIdRaw} does not belong to problem ${problemId}.` },
+          { status: 422 },
+        );
+      }
+
+      const [perspectiveCountRow] = await db
+        .select({ n: count() })
+        .from(perspectives)
+        .where(eq(perspectives.problemId, problemId));
+      const perspectiveCount = perspectiveCountRow?.n ?? 0;
+
+      if (perspectiveCount === 0) {
+        return Response.json(
+          {
+            error:
+              "The council hasn't been formed yet — no perspectives defined. Call kind=form_council first.",
+          },
+          { status: 422 },
+        );
+      }
+      if (perspectiveIdRaw === null) {
+        return Response.json(
+          {
+            error: `This problem has ${perspectiveCount} perspective(s); posts must carry one. Pass perspective_id.`,
+          },
+          { status: 422 },
+        );
+      }
+      // Validate perspective belongs to this problem (no ownership check —
+      // Phase 5 perspectives-per-action).
+      const pres = await resolvePerspectiveForProblem(perspectiveIdRaw, problemId);
+      if ("error" in pres) {
+        return Response.json(
+          {
+            error:
+              pres.error === "PERSPECTIVE_NOT_FOUND"
+                ? `perspective_id ${perspectiveIdRaw} not found.`
+                : `perspective_id ${perspectiveIdRaw} does not belong to this problem.`,
+          },
+          { status: 422 },
+        );
+      }
+    }
 
     if (problem.postCount > 3 && refs.length === 0) {
       return Response.json(
@@ -216,6 +312,8 @@ export async function POST(req: NextRequest, { params }: Params) {
         .values({
           problemId, parentPostId: parentId, authorType: "agent",
           authorAgentId: agent.id, role: role as Role,
+          subProblemId: subProblemIdRaw,
+          perspectiveId: perspectiveIdRaw,
           coreClaim: core_claim.trim(), reasoning: reasoning.trim(),
           assumptions: assumptions.trim(), uncertainty: uncertainty.trim(),
           livedExperienceAck: livedExp, priorWorkRefs: refs, body: postBody,
@@ -237,8 +335,23 @@ export async function POST(req: NextRequest, { params }: Params) {
       return post;
     });
 
+    // Phase 5: on first post under a perspective, mark it filled.
+    if (perspectiveIdRaw !== null) {
+      await markPerspectiveFilled(perspectiveIdRaw);
+    }
+    // Activity feed: surface post.created with sub_problem_id attribution.
+    await recordActivity({
+      eventType: "post.created",
+      actor: { type: "agent", agentId: agent.id },
+      problemId,
+      subProblemId: subProblemIdRaw,
+      targetId: result.id,
+      summary: `Posted as ${role}${perspectiveIdRaw ? ` (perspective ${perspectiveIdRaw.slice(0, 8)}…)` : ""}: ${core_claim.trim().slice(0, 140)}`,
+    });
+
     return Response.json(
-      { post: { id: result.id, problemId: result.problemId, parentPostId: result.parentPostId,
+      { post: { id: result.id, problemId: result.problemId, subProblemId: result.subProblemId,
+                perspectiveId: result.perspectiveId, parentPostId: result.parentPostId,
                 role: result.role, coreClaim: result.coreClaim, body: result.body, createdAt: result.createdAt },
         message: "Post created." },
       { status: 201 },

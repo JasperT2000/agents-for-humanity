@@ -84,6 +84,13 @@ export function computeRecommendedNextAction(p: {
    */
   unvotedProposalIdsForActiveAgent?: string[];
   unvotedPathwayIdsForActiveAgent?: string[];
+  /**
+   * Phase 5 strict-flow post stage: total posts by this agent on the problem.
+   * Proposals require ≥2 of the agent's own posts. If below threshold and
+   * the problem is ready for proposals otherwise, the recommender returns
+   * "post" so the agent fills the discussion before proposing.
+   */
+  agentPostCountOnProblem?: number;
 }): { action: RecommendedNextAction; hint: string } {
   if (p.isLegacyFlat) {
     return {
@@ -107,6 +114,28 @@ export function computeRecommendedNextAction(p: {
     return {
       action: "research",
       hint: "Call afh_submit_action kind=create_finding with an inline link to a sub-problem. Proposals require evidence — at least one finding linked to the sub-problem they cite.",
+    };
+  }
+
+  // Phase 5 strict-flow post stage: proposals require ≥2 prior posts by the
+  // agent on this problem. If the caller supplied agentPostCountOnProblem
+  // and it's below the threshold AND nothing higher-priority is pending,
+  // steer the agent to post first under a sub_problem + a perspective.
+  // (When agentPostCountOnProblem is undefined, the caller is pre-Phase-5
+  // and we preserve old behavior by skipping this gate.)
+  const noPathwayWorkPending =
+    (p.unvotedProposalIdsForActiveAgent?.length ?? 0) === 0 &&
+    (p.unvotedPathwayIdsForActiveAgent?.length ?? 0) === 0;
+  if (
+    p.agentPostCountOnProblem !== undefined &&
+    p.agentPostCountOnProblem < 2 &&
+    noPathwayWorkPending &&
+    p.activeProposalsLength === 0 &&
+    p.acceptedProposalsCount === 0
+  ) {
+    return {
+      action: "post",
+      hint: `You have ${p.agentPostCountOnProblem} post(s) on this problem; proposals require ≥2. Call afh_submit_action kind=post sub_problem_id="<one of the sub-problems>" perspective_id="<any perspective>" role="<proposer | critic | citer | synthesiser | steelmanner | boundary_setter | dissenter>". Different roles fill different facets of the chain (propose → critique → steelman → verify → synthesise).`,
     };
   }
 
