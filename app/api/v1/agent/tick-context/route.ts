@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
+import { and, count as countRaw, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/db";
@@ -277,6 +277,15 @@ export async function GET(request: Request) {
         const hasSynthesisContent = !!synthDoc?.currentMarkdown;
         const synthesisRecommendsPathway = !!synthDoc?.recommendedPathwayId;
 
+        // Phase 5 strict-flow: count this agent's posts on this problem.
+        // Proposals require ≥2 by the same agent, so the recommender uses
+        // this to decide whether to recommend "post" first.
+        const [agentPostCountRow] = await db
+          .select({ n: countRaw() })
+          .from(posts)
+          .where(and(eq(posts.problemId, p.id), eq(posts.authorAgentId, agent.id)));
+        const agentPostCountOnProblem = Number(agentPostCountRow?.n ?? 0);
+
         // The recommender expects `activeAgentHoldsPerspective` from the pre-
         // perspectives-per-action model. In the new model this isn't enforced
         // (any agent can pick any perspective per-action), so we pass `true`
@@ -295,12 +304,14 @@ export async function GET(request: Request) {
           synthesisRecommendsPathway,
           unvotedProposalIdsForActiveAgent,
           unvotedPathwayIdsForActiveAgent,
+          agentPostCountOnProblem,
         });
 
         const recommendedNextAction = buildRecommendedAction({
           action,
           hint,
           problemId: p.id,
+          isLegacyFlat: p.isLegacyFlat,
           subProblems: subProblemRows,
           perspectives: perspectiveRows,
           activeProposals: activeProposalRows,
@@ -372,6 +383,7 @@ function buildRecommendedAction({
   action,
   hint,
   problemId,
+  isLegacyFlat,
   subProblems,
   perspectives: persp,
   activeProposals,
@@ -382,6 +394,7 @@ function buildRecommendedAction({
   action: string;
   hint: string;
   problemId: string;
+  isLegacyFlat: boolean;
   subProblems: Array<{ id: string; title: string; displayOrder: number }>;
   perspectives: Array<{ id: string; label: string; status: string }>;
   activeProposals: Array<{ id: string; summary: string; subProblemId: string | null }>;
@@ -396,7 +409,42 @@ function buildRecommendedAction({
 } {
   switch (action) {
     case "post":
-      // Legacy-flat problems
+      // Strict-flow problems require sub_problem_id + perspective_id.
+      // Legacy-flat problems only need the role + body fields.
+      if (!isLegacyFlat) {
+        return {
+          kind: "post",
+          hint,
+          action_template: {
+            type: "post",
+            problem_id: problemId,
+            sub_problem_id: subProblems[0]?.id ?? "<pick from available_sub_problems>",
+            perspective_id: persp[0]?.id ?? "<pick from available_perspectives>",
+            role: "<one of: " + VALID_POST_ROLES.join(" | ") + ">",
+            core_claim: "<max 280 chars>",
+            reasoning: "<min 100 chars>",
+            assumptions: "<min 50 chars>",
+            uncertainty: "<min 50 chars>",
+          },
+          constraints: {
+            available_sub_problems: subProblems.map((sp) => ({
+              id: sp.id,
+              title: sp.title,
+              display_order: sp.displayOrder,
+            })),
+            available_perspectives: persp.map((pr) => ({ id: pr.id, label: pr.label })),
+            valid_roles: [...VALID_POST_ROLES],
+            core_claim_max: 280,
+            reasoning_min: 100,
+            reasoning_max: 3000,
+            assumptions_min: 50,
+            assumptions_max: 1000,
+            uncertainty_min: 50,
+            uncertainty_max: 500,
+            note: "Pick a sub_problem_id + perspective_id per-action. Perspectives are not claimed persistently — any perspective is fair game.",
+          },
+        };
+      }
       return {
         kind: "post",
         hint,

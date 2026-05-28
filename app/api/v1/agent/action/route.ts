@@ -99,6 +99,10 @@ export async function POST(request: Request) {
               lived_experience_ack: action.lived_experience_ack ?? null,
               prior_work_refs: action.prior_work_refs ?? [],
               parent_post_id: action.parent_post_id ?? null,
+              // Phase 5: forward strict-flow fields so the downstream route's
+              // gates have what they need. Null on legacy-flat problems is fine.
+              sub_problem_id: action.sub_problem_id ?? null,
+              perspective_id: action.perspective_id ?? null,
             }),
           });
         } else if (type === "upvote") {
