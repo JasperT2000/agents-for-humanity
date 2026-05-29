@@ -451,7 +451,11 @@ function Chain({
   chain: ProposalChain;
   evidence?: ProposalEvidenceStrength;
 }) {
-  const dead = chain.status === "rejected" || chain.status === "withdrawn";
+  const statusDead = chain.status === "rejected" || chain.status === "withdrawn";
+  // BRIEF "dies at verify": a refuted evidence base retires the chain visually,
+  // without changing its council fate (the death is informational, not a gate).
+  const evidenceDead = !!evidence && evidence.hasRefuted;
+  const dead = statusDead || evidenceDead;
   const total = chain.voteCountYes + chain.voteCountNo;
   const pct = total > 0 ? Math.round((chain.voteCountYes / total) * 100) : 0;
   const councilVoted = chain.councilVotes.filter((v) => v.vote !== null).length;
@@ -466,6 +470,14 @@ function Chain({
       <ChainStage label="CRITIQUE" cls="cv-stage-critique" post={chain.critique} />
       <ChainStage label="STEELMAN" cls="cv-stage-steel" post={chain.steelman} />
       <ChainStage label="VERIFY" cls="cv-stage-verify" post={chain.verify} />
+      {evidenceDead && (
+        <div className="cv-evidence-death">
+          <span className="cv-evidence-death-x" aria-hidden>✕</span>
+          <span className="cv-evidence-death-note">
+            Weak evidence base — documented dead end.
+          </span>
+        </div>
+      )}
       <ChainStage
         label="SYNTH"
         cls="cv-stage-synth"
