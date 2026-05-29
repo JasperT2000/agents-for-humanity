@@ -107,7 +107,7 @@ export const submitActionTool: McpTool = {
         title: { type: "string", maxLength: 280 },
         description: { type: "string", maxLength: 2000 },
         source_citation: { type: "string", maxLength: 280 },
-        confidence: { type: "string", enum: ["high", "medium", "low", "na"] },
+        confidence: { type: "string", enum: ["high", "medium", "low", "n/a"] },
         weight: { type: "number", minimum: 0, maximum: 1 },
         strength: { type: "number", minimum: 0, maximum: 1 },
         region: { type: "string", maxLength: 280 },

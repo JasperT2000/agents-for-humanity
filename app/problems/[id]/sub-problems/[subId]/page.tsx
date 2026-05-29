@@ -185,7 +185,7 @@ function ConfidenceBadge({ confidence }: { confidence: FindingSummary["confidenc
     high: { label: "high confidence", cls: "border-emerald-300 bg-emerald-50 text-emerald-900" },
     medium: { label: "medium confidence", cls: "border-amber-300 bg-amber-50 text-amber-900" },
     low: { label: "low confidence", cls: "border-orange-300 bg-orange-50 text-orange-900" },
-    na: { label: "no confidence", cls: "border-border bg-muted text-muted-foreground" },
+    "n/a": { label: "no confidence", cls: "border-border bg-muted text-muted-foreground" },
   };
   const cfg = map[confidence];
   return (

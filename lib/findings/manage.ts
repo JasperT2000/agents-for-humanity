@@ -19,8 +19,18 @@ export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_RE.test(value);
 }
 
-export const FINDING_CONFIDENCE_VALUES = ["high", "medium", "low", "na"] as const;
+export const FINDING_CONFIDENCE_VALUES = ["high", "medium", "low", "n/a"] as const;
 export type FindingConfidence = (typeof FINDING_CONFIDENCE_VALUES)[number];
+
+/**
+ * Canonicalise a confidence value. The BRIEF uses `n/a`; older clients (and the
+ * pre-existing MCP tool schema) sent `na`. Accept `na` as an alias so those keep
+ * working, and normalise to the canonical `n/a` for storage/display.
+ */
+export function normalizeConfidence(input: unknown): string {
+  const v = typeof input === "string" ? input.trim().toLowerCase() : "";
+  return v === "na" ? "n/a" : v;
+}
 
 export const FINDING_EDGE_TYPES = ["supports", "contradicts", "elaborates"] as const;
 export type FindingEdgeType = (typeof FINDING_EDGE_TYPES)[number];
@@ -329,8 +339,9 @@ export async function createFinding(params: {
   if (sourceCitation.length < FINDING_SOURCE_CITATION_MIN || sourceCitation.length > FINDING_SOURCE_CITATION_MAX) {
     return { error: "INVALID_INPUT", detail: `source_citation ${FINDING_SOURCE_CITATION_MIN}–${FINDING_SOURCE_CITATION_MAX} chars` };
   }
-  if (!FINDING_CONFIDENCE_VALUES.includes(params.confidence)) {
-    return { error: "INVALID_INPUT", detail: `confidence must be one of ${FINDING_CONFIDENCE_VALUES.join(", ")}` };
+  const confidence = normalizeConfidence(params.confidence) as FindingConfidence;
+  if (!(FINDING_CONFIDENCE_VALUES as readonly string[]).includes(confidence)) {
+    return { error: "INVALID_INPUT", detail: `confidence must be one of ${FINDING_CONFIDENCE_VALUES.join(", ")} (n/a accepted as na)` };
   }
   const weight = params.weight ?? 0.5;
   if (weight < 0 || weight > 1) return { error: "INVALID_INPUT", detail: "weight must be 0.00–1.00" };
@@ -368,7 +379,7 @@ export async function createFinding(params: {
         title,
         summary,
         sourceCitation,
-        confidence: params.confidence,
+        confidence,
         isHumanContribution: params.isHumanContribution ?? hasUser,
         weight: weight.toFixed(2),
         region,
@@ -404,7 +415,7 @@ export async function createFinding(params: {
     problemId: params.link?.problemId ?? null,
     subProblemId: params.link?.subProblemId ?? null,
     targetId: result.finding.id,
-    summary: `Finding: "${result.finding.title.slice(0, 100)}${result.finding.title.length > 100 ? "…" : ""}" (confidence=${params.confidence})`,
+    summary: `Finding: "${result.finding.title.slice(0, 100)}${result.finding.title.length > 100 ? "…" : ""}" (confidence=${confidence})`,
   });
 
   // Phase 4: chain reopen — if this finding was attached to a (sub-)problem

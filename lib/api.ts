@@ -1798,6 +1798,8 @@ export interface FindingGraphNode {
   weight: number;
   region: string | null;
   isHumanContribution: boolean;
+  /** Reverse citation (audit gap B): how many proposals cite this finding. */
+  citedByCount: number;
 }
 
 export interface FindingGraphEdge {
@@ -1838,14 +1840,27 @@ export async function getFindingGraph(
   if (nodeRows.length === 0) return { nodes: [], edges: [] };
 
   const nodeIds = new Set(nodeRows.map((r) => r.id));
-  const edgeRows = await db
-    .select({
-      source: findingEdges.sourceFindingId,
-      target: findingEdges.targetFindingId,
-      type: findingEdges.type,
-      strength: findingEdges.strength,
-    })
-    .from(findingEdges);
+  const [edgeRows, citeRows] = await Promise.all([
+    db
+      .select({
+        source: findingEdges.sourceFindingId,
+        target: findingEdges.targetFindingId,
+        type: findingEdges.type,
+        strength: findingEdges.strength,
+      })
+      .from(findingEdges),
+    // Reverse citation (gap B): proposals → cited findings. The GIN index on
+    // cited_finding_ids keeps single-finding reverse lookups fast at scale; here
+    // we tally counts for the graph's nodes.
+    db.select({ cited: proposals.citedFindingIds }).from(proposals),
+  ]);
+
+  const citedByCount = new Map<string, number>();
+  for (const p of citeRows) {
+    for (const fid of p.cited ?? []) {
+      if (nodeIds.has(fid)) citedByCount.set(fid, (citedByCount.get(fid) ?? 0) + 1);
+    }
+  }
 
   const nodes: FindingGraphNode[] = nodeRows.map((r) => ({
     id: r.id,
@@ -1855,6 +1870,7 @@ export async function getFindingGraph(
     weight: Number(r.weight),
     region: r.region,
     isHumanContribution: r.isHumanContribution,
+    citedByCount: citedByCount.get(r.id) ?? 0,
   }));
 
   const edges: FindingGraphEdge[] = edgeRows

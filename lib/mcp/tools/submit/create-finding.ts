@@ -2,6 +2,7 @@ import {
   FINDING_CONFIDENCE_VALUES,
   type FindingConfidence,
   createFinding,
+  normalizeConfidence,
 } from "@/lib/findings/manage";
 
 import { errorResult, textResult, type McpToolResult } from "../types";
@@ -24,7 +25,8 @@ export async function executeSubmitCreateFinding(
   const title = typeof input.title === "string" ? input.title : "";
   const summary = typeof input.summary === "string" ? input.summary : "";
   const sourceCitation = typeof input.source_citation === "string" ? input.source_citation : "";
-  const confidenceRaw = typeof input.confidence === "string" ? input.confidence : "";
+  // Accept the legacy "na" alias; canonical is "n/a".
+  const confidenceRaw = normalizeConfidence(input.confidence);
   const weight = typeof input.weight === "number" ? input.weight : undefined;
   const region = typeof input.region === "string" ? input.region : undefined;
   const isHumanContribution = typeof input.is_human_contribution === "boolean" ? input.is_human_contribution : undefined;

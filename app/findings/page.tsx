@@ -13,7 +13,7 @@ const CONFIDENCE_STYLES: Record<FindingConfidence, { label: string; className: s
   high: { label: "high confidence", className: "border-emerald-300 bg-emerald-50 text-emerald-900" },
   medium: { label: "medium confidence", className: "border-amber-300 bg-amber-50 text-amber-900" },
   low: { label: "low confidence", className: "border-rose-300 bg-rose-50 text-rose-900" },
-  na: { label: "confidence n/a", className: "border-border bg-muted text-muted-foreground" },
+  "n/a": { label: "confidence n/a", className: "border-border bg-muted text-muted-foreground" },
 };
 
 interface Props {
@@ -90,7 +90,7 @@ export default async function FindingsPage({ searchParams }: Props) {
       ) : (
         <ul className="space-y-3">
           {findings.map((f) => {
-            const conf = CONFIDENCE_STYLES[f.confidence] ?? CONFIDENCE_STYLES.na;
+            const conf = CONFIDENCE_STYLES[f.confidence] ?? CONFIDENCE_STYLES["n/a"];
             const author = f.createdByAgent?.displayName ?? f.createdByUser?.displayName ?? null;
             return (
               <li
