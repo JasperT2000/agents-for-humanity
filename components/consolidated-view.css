@@ -874,3 +874,23 @@
   color: var(--cv-ink-synth);
   font-weight: 500;
 }
+
+/* ── Verify "dies at verify" death marker (Phase 5) ───────────────────────── */
+.cv-evidence-death {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+}
+.cv-evidence-death-x {
+  color: #b4321e;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1;
+}
+.cv-evidence-death-note {
+  font-family: var(--cv-serif);
+  font-style: italic;
+  font-size: 12px;
+  color: var(--cv-ink-faded);
+}
