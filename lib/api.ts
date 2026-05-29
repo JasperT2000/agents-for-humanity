@@ -1826,3 +1826,100 @@ export async function getRecentActivityForProblem(
     };
   });
 }
+
+/**
+ * Global activity stream across every problem — same actor resolution as
+ * getRecentActivityForProblem, plus the title of the problem each event
+ * belongs to (null for problem-less events). Newest first. Powers /activity.
+ */
+export async function getRecentActivityGlobal(
+  opts: { sinceIso?: string | null; limit?: number } = {},
+): Promise<Array<ActivityEventSummary & { problemTitle: string | null }>> {
+  const db = getDb();
+  if (!db) return [];
+
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+  const clauses = [];
+  if (opts.sinceIso) {
+    const ts = new Date(opts.sinceIso);
+    if (!Number.isNaN(ts.getTime())) clauses.push(gt(activityEvents.createdAt, ts));
+  }
+
+  const rows = await db
+    .select({
+      id: activityEvents.id,
+      eventType: activityEvents.eventType,
+      actorType: activityEvents.actorType,
+      actorAgentId: activityEvents.actorAgentId,
+      actorUserId: activityEvents.actorUserId,
+      problemId: activityEvents.problemId,
+      subProblemId: activityEvents.subProblemId,
+      targetId: activityEvents.targetId,
+      summary: activityEvents.summary,
+      createdAt: activityEvents.createdAt,
+    })
+    .from(activityEvents)
+    .where(clauses.length > 0 ? and(...clauses) : undefined)
+    .orderBy(desc(activityEvents.createdAt))
+    .limit(limit);
+
+  if (rows.length === 0) return [];
+
+  const agentIds = [...new Set(rows.map((r) => r.actorAgentId).filter(Boolean) as string[])];
+  const userIds = [...new Set(rows.map((r) => r.actorUserId).filter(Boolean) as string[])];
+  const problemIds = [...new Set(rows.map((r) => r.problemId).filter(Boolean) as string[])];
+
+  const [agentRows, userRows, problemRows] = await Promise.all([
+    agentIds.length > 0
+      ? db
+          .select({ id: agents.id, displayName: agents.displayName })
+          .from(agents)
+          .where(inArray(agents.id, agentIds))
+      : Promise.resolve([]),
+    userIds.length > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
+    problemIds.length > 0
+      ? db
+          .select({ id: problems.id, title: problems.title })
+          .from(problems)
+          .where(inArray(problems.id, problemIds))
+      : Promise.resolve([]),
+  ]);
+
+  const agentMap = new Map(agentRows.map((a) => [a.id, a.displayName]));
+  const userMap = new Map(userRows.map((u) => [u.id, u.displayName]));
+  const problemMap = new Map(problemRows.map((p) => [p.id, p.title]));
+
+  return rows.map((r) => {
+    const actor =
+      r.actorType === "agent" && r.actorAgentId
+        ? {
+            type: "agent" as const,
+            id: r.actorAgentId,
+            displayName: agentMap.get(r.actorAgentId) ?? "Unknown agent",
+          }
+        : r.actorType === "human" && r.actorUserId
+          ? {
+              type: "human" as const,
+              id: r.actorUserId,
+              displayName: userMap.get(r.actorUserId) ?? "Unknown human",
+            }
+          : { type: "system" as const };
+    return {
+      id: r.id,
+      eventType: r.eventType,
+      actorType: r.actorType as ActivityActorType,
+      actor,
+      problemId: r.problemId,
+      subProblemId: r.subProblemId,
+      targetId: r.targetId,
+      summary: r.summary,
+      createdAt: toIso(r.createdAt),
+      problemTitle: r.problemId ? (problemMap.get(r.problemId) ?? null) : null,
+    };
+  });
+}
