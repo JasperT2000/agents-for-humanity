@@ -3,7 +3,7 @@
  * Server-side only: queries Drizzle directly (no HTTP round-trip needed).
  */
 
-import { and, asc, count, desc, eq, gt, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, ilike, inArray, isNotNull, or } from "drizzle-orm";
 
 import { getDb } from "@/db";
 import {
@@ -1618,6 +1618,119 @@ export async function getAllFindingsForProblem(
     createdAt: toIso(r.createdAt),
     subProblemId: r.subProblemId ?? null,
   }));
+}
+
+/**
+ * Global evidence library: every finding across all problems, newest/heaviest
+ * first, with creator + the problems it's attached to resolved. Optional `q`
+ * does a case-insensitive match on title / summary / source citation. Powers
+ * the /findings browse page.
+ */
+export async function getAllFindings(
+  opts: { q?: string | null; limit?: number } = {},
+): Promise<Array<FindingSummary & { problems: { id: string; title: string }[] }>> {
+  const db = getDb();
+  if (!db) return [];
+
+  const limit = Math.max(1, Math.min(200, opts.limit ?? 100));
+  const q = opts.q?.trim();
+  const searchClause = q
+    ? or(
+        ilike(findings.title, `%${q}%`),
+        ilike(findings.summary, `%${q}%`),
+        ilike(findings.sourceCitation, `%${q}%`),
+      )
+    : undefined;
+
+  const rows = await db
+    .select({
+      id: findings.id,
+      title: findings.title,
+      summary: findings.summary,
+      sourceCitation: findings.sourceCitation,
+      confidence: findings.confidence,
+      weight: findings.weight,
+      region: findings.region,
+      isHumanContribution: findings.isHumanContribution,
+      createdByAgentId: findings.createdByAgentId,
+      createdByUserId: findings.createdByUserId,
+      createdAt: findings.createdAt,
+    })
+    .from(findings)
+    .where(searchClause)
+    .orderBy(desc(findings.weight), desc(findings.createdAt))
+    .limit(limit);
+
+  if (rows.length === 0) return [];
+
+  const findingIds = rows.map((r) => r.id);
+  const agentIds = [...new Set(rows.map((r) => r.createdByAgentId).filter(Boolean) as string[])];
+  const userIds = [...new Set(rows.map((r) => r.createdByUserId).filter(Boolean) as string[])];
+
+  const [agentRows, userRows, linkRows] = await Promise.all([
+    agentIds.length > 0
+      ? db
+          .select({ id: agents.id, displayName: agents.displayName, modelFamily: agents.modelFamily })
+          .from(agents)
+          .where(inArray(agents.id, agentIds))
+      : Promise.resolve([]),
+    userIds.length > 0
+      ? db
+          .select({ id: users.id, displayName: users.displayName, xHandle: users.xHandle })
+          .from(users)
+          .where(inArray(users.id, userIds))
+      : Promise.resolve([]),
+    db
+      .select({
+        findingId: findingProblemLinks.findingId,
+        problemId: problems.id,
+        problemTitle: problems.title,
+      })
+      .from(findingProblemLinks)
+      .innerJoin(problems, eq(problems.id, findingProblemLinks.problemId))
+      .where(inArray(findingProblemLinks.findingId, findingIds)),
+  ]);
+
+  const agentMap = new Map(agentRows.map((a) => [a.id, a]));
+  const userMap = new Map(userRows.map((u) => [u.id, u]));
+  const problemsByFinding = new Map<string, { id: string; title: string }[]>();
+  for (const l of linkRows) {
+    const arr = problemsByFinding.get(l.findingId) ?? [];
+    if (!arr.some((p) => p.id === l.problemId)) {
+      arr.push({ id: l.problemId, title: l.problemTitle });
+    }
+    problemsByFinding.set(l.findingId, arr);
+  }
+
+  return rows.map((r) => {
+    const finding: FindingSummary & { problems: { id: string; title: string }[] } = {
+      id: r.id,
+      title: r.title,
+      summary: r.summary,
+      sourceCitation: r.sourceCitation,
+      confidence: r.confidence as FindingConfidence,
+      weight: Number(r.weight),
+      region: r.region,
+      isHumanContribution: r.isHumanContribution,
+      createdAt: toIso(r.createdAt),
+      problems: problemsByFinding.get(r.id) ?? [],
+    };
+    if (r.createdByAgentId) {
+      const a = agentMap.get(r.createdByAgentId);
+      if (a) {
+        finding.createdByAgent = {
+          id: a.id,
+          displayName: a.displayName,
+          modelFamily: a.modelFamily as Agent["modelFamily"],
+        };
+      }
+    }
+    if (r.createdByUserId) {
+      const u = userMap.get(r.createdByUserId);
+      if (u) finding.createdByUser = { id: u.id, displayName: u.displayName, xHandle: u.xHandle };
+    }
+    return finding;
+  });
 }
 
 // ── Activity feed (PR-5.B4) ──────────────────────────────────────────────────
