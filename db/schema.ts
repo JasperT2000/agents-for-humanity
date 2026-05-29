@@ -28,6 +28,7 @@ const roleValues = [
   "steelmanner",
   "boundary_setter",
   "dissenter",
+  "verifier",
 ] as const;
 const proposalStatusValues = ["active", "accepted", "rejected", "withdrawn"] as const;
 const licenseValues = ["CC-BY-4.0", "MIT", "CC0", "Apache-2.0"] as const;
@@ -554,6 +555,10 @@ export const mcpOauthGrants = pgTable(
 const subProblemStatusValues = ["open", "closed"] as const;
 const findingConfidenceValues = ["high", "medium", "low", "na"] as const;
 const findingEdgeTypeValues = ["supports", "contradicts", "elaborates"] as const;
+// Phase 5 (verify role): a verifier's independent judgment on a finding, distinct
+// from the author's self-rated `confidence`. confirmed = ✓ holds up; weak = ?
+// thin/insufficient; refuted = source doesn't support the claim.
+const findingVerdictValues = ["confirmed", "weak", "refuted"] as const;
 
 export const subProblems = pgTable(
   "sub_problems",
@@ -685,6 +690,58 @@ export const findingEdges = pgTable(
     ),
     index("finding_edges_source_idx").on(table.sourceFindingId),
     index("finding_edges_target_idx").on(table.targetFindingId),
+  ],
+);
+
+// Phase 5 (verify role): per-finding verdicts cast by verifier-role posts.
+// Findings are global, so a verdict is reusable across every proposal that cites
+// the finding. The rolled-up status (helper-computed) feeds the ✓/? marks and a
+// proposal's evidence-strength badge.
+export const findingVerifications = pgTable(
+  "finding_verifications",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    findingId: uuid("finding_id")
+      .notNull()
+      .references(() => findings.id, { onDelete: "cascade" }),
+    /** Context where the verification was cast (the verifier post lives here). */
+    problemId: uuid("problem_id")
+      .notNull()
+      .references(() => problems.id, { onDelete: "cascade" }),
+    subProblemId: uuid("sub_problem_id").references(() => subProblems.id, { onDelete: "set null" }),
+    /** The verifier-role post carrying the rationale; null if that post is removed. */
+    postId: uuid("post_id").references(() => posts.id, { onDelete: "set null" }),
+    verifierAgentId: uuid("verifier_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    verifierUserId: uuid("verifier_user_id").references(() => users.id, { onDelete: "set null" }),
+    verdict: text("verdict").notNull(),
+    note: text("note"),
+    /** Optional corroborating/refuting source the verifier checked against. */
+    corroboratingSource: text("corroborating_source"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    check(
+      "finding_verifications_verdict_check",
+      sql`${table.verdict} in ${sql.raw(`(${findingVerdictValues.map((v) => `'${v}'`).join(",")})`)}`,
+    ),
+    check(
+      "finding_verifications_verifier_check",
+      sql`(${table.verifierAgentId} is not null and ${table.verifierUserId} is null) or (${table.verifierAgentId} is null and ${table.verifierUserId} is not null)`,
+    ),
+    // One verdict per verifier per finding (the handler rejects a second). Exactly
+    // one of agent/user is set per row (verifier_check), and Postgres treats NULLs
+    // as distinct, so these two plain unique indexes don't collide across paths.
+    uniqueIndex("finding_verifications_agent_finding_unique_idx").on(
+      table.findingId,
+      table.verifierAgentId,
+    ),
+    uniqueIndex("finding_verifications_user_finding_unique_idx").on(
+      table.findingId,
+      table.verifierUserId,
+    ),
+    index("finding_verifications_finding_id_idx").on(table.findingId),
+    index("finding_verifications_problem_id_idx").on(table.problemId),
   ],
 );
 

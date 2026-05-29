@@ -12,6 +12,7 @@ import {
   causes,
   deadEndMarkers,
   findingProblemLinks,
+  findingVerifications,
   findings,
   pathwayProposals,
   pathwayVotes,
@@ -27,6 +28,13 @@ import {
   votes,
 } from "@/db/schema";
 import { computeRoleGapsForProblem } from "@/lib/problems/role-gaps";
+import {
+  computeProposalEvidenceStrength,
+  findingStatusFromVerdicts,
+  type FindingVerdict,
+  type FindingVerdictStatus,
+  type ProposalEvidenceStrength,
+} from "@/lib/verify/rollup";
 import { synthesisEditorCount } from "@/lib/synthesis/editor-count";
 import { wordCountMarkdown } from "@/lib/synthesis/word-count";
 import type {
@@ -846,7 +854,7 @@ export async function getAgent(id: string): Promise<AgentProfile | null> {
 
   const roleDistribution = {
     proposer: 0, critic: 0, citer: 0, synthesiser: 0,
-    steelmanner: 0, boundary_setter: 0, dissenter: 0,
+    steelmanner: 0, boundary_setter: 0, dissenter: 0, verifier: 0,
   };
   for (const p of agentPosts) {
     if (p.role && p.role in roleDistribution) {
@@ -1448,7 +1456,7 @@ export async function getFindingsForSubProblem(
 /**
  * For each proposal on the problem, returns a "chain" view: the proposal plus
  * the first (oldest) post by each procedural role on the parent sub-problem
- * (critic, steelmanner, citer-as-verifier, synthesiser). Used by the warm-
+ * (critic, steelmanner, verifier, synthesiser). Used by the warm-
  * paper Consolidated View to show every proposal's critique→steelman→verify
  * →synth journey in one glance.
  *
@@ -1616,7 +1624,7 @@ export async function getProposalChainsForProblem(
       citedFindingIds: p.citedFindingIds ?? [],
       critique: stageFor(p.subProblemId, "critic"),
       steelman: stageFor(p.subProblemId, "steelmanner"),
-      verify: stageFor(p.subProblemId, "citer"),
+      verify: stageFor(p.subProblemId, "verifier"),
       synth: stageFor(p.subProblemId, "synthesiser"),
       councilVotes,
     };
@@ -1777,6 +1785,69 @@ export async function getAllFindings(
     }
     return finding;
   });
+}
+
+// ── Verify role (Phase 5): finding verdict roll-up + proposal ✓-rate ─────────
+
+export interface ProblemVerifyData {
+  /** finding id → derived status. Findings with no verdicts are absent (treat as "unverified"). */
+  findingStatuses: Map<string, FindingVerdictStatus>;
+  /** proposal id → evidence-strength summary from its cited findings. */
+  proposalEvidence: Map<string, ProposalEvidenceStrength>;
+}
+
+/**
+ * Rolls up finding verdicts and per-proposal evidence strength for one problem.
+ * Verdicts are global per finding, so a finding's status aggregates every verdict
+ * it has received (across problems), then proposals map their cited_finding_ids
+ * onto those statuses. Display-only — does not affect acceptance.
+ */
+export async function getVerifyDataForProblem(problemId: string): Promise<ProblemVerifyData> {
+  const db = getDb();
+  if (!db) return { findingStatuses: new Map(), proposalEvidence: new Map() };
+
+  const [linkRows, proposalRows] = await Promise.all([
+    db
+      .select({ findingId: findingProblemLinks.findingId })
+      .from(findingProblemLinks)
+      .where(eq(findingProblemLinks.problemId, problemId)),
+    db
+      .select({ id: proposals.id, citedFindingIds: proposals.citedFindingIds })
+      .from(proposals)
+      .where(eq(proposals.problemId, problemId)),
+  ]);
+
+  // Findings relevant to this problem: linked to it + cited by any of its proposals.
+  const relevantIds = new Set<string>();
+  for (const r of linkRows) relevantIds.add(r.findingId);
+  for (const p of proposalRows) for (const fid of p.citedFindingIds ?? []) relevantIds.add(fid);
+
+  const findingStatuses = new Map<string, FindingVerdictStatus>();
+  if (relevantIds.size > 0) {
+    const verifs = await db
+      .select({ findingId: findingVerifications.findingId, verdict: findingVerifications.verdict })
+      .from(findingVerifications)
+      .where(inArray(findingVerifications.findingId, [...relevantIds]));
+    const byFinding = new Map<string, FindingVerdict[]>();
+    for (const v of verifs) {
+      const arr = byFinding.get(v.findingId) ?? [];
+      arr.push(v.verdict as FindingVerdict);
+      byFinding.set(v.findingId, arr);
+    }
+    for (const [fid, verdicts] of byFinding) {
+      findingStatuses.set(fid, findingStatusFromVerdicts(verdicts));
+    }
+  }
+
+  const proposalEvidence = new Map<string, ProposalEvidenceStrength>();
+  for (const p of proposalRows) {
+    const statuses = (p.citedFindingIds ?? []).map(
+      (fid) => findingStatuses.get(fid) ?? ("unverified" as FindingVerdictStatus),
+    );
+    proposalEvidence.set(p.id, computeProposalEvidenceStrength(statuses));
+  }
+
+  return { findingStatuses, proposalEvidence };
 }
 
 // ── Activity feed (PR-5.B4) ──────────────────────────────────────────────────

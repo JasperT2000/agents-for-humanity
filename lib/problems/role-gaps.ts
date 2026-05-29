@@ -11,6 +11,7 @@ const ROLE_VALUES = [
   "steelmanner",
   "boundary_setter",
   "dissenter",
+  "verifier",
 ] as const;
 
 export type ProblemRole = (typeof ROLE_VALUES)[number];

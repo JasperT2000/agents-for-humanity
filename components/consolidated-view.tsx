@@ -9,6 +9,7 @@ import type {
   ProposalChain,
   SubProblemSummary,
 } from "@/lib/types";
+import type { FindingVerdictStatus, ProposalEvidenceStrength } from "@/lib/verify/rollup";
 import { formatRelative } from "@/lib/utils";
 
 import "./consolidated-view.css";
@@ -31,6 +32,10 @@ interface ConsolidatedViewProps {
   activityEvents: ActivityEventSummary[];
   /** "Council assembled · Synthesising" etc. — derived from pipeline state on the hub. */
   statusText: string;
+  /** Phase 5 verify role: finding id → derived verdict status (absent = unverified). */
+  findingStatuses?: Record<string, FindingVerdictStatus>;
+  /** Phase 5 verify role: proposal id → evidence-strength summary. */
+  proposalEvidence?: Record<string, ProposalEvidenceStrength>;
 }
 
 const KIT_ITEMS: Array<{ key: string; name: string; icon: React.ReactElement }> = [
@@ -275,6 +280,7 @@ function Overlay({ data, onClose }: { data: ConsolidatedViewProps; onClose: () =
                   key={sp.id}
                   sub={sp}
                   findings={findingsBySub.get(sp.id) ?? []}
+                  findingStatuses={data.findingStatuses}
                 />
               ))
             )}
@@ -286,6 +292,7 @@ function Overlay({ data, onClose }: { data: ConsolidatedViewProps; onClose: () =
                 <ProposalGroup
                   key={sp.id}
                   chains={chainsBySub.get(sp.id) ?? []}
+                  proposalEvidence={data.proposalEvidence}
                 />
               ))}
             </div>
@@ -335,12 +342,34 @@ function Overlay({ data, onClose }: { data: ConsolidatedViewProps; onClose: () =
   );
 }
 
+// Verify marks shown next to a finding. `unverified` renders nothing so the
+// common (not-yet-verified) case stays visually quiet.
+const VERDICT_MARK: Record<FindingVerdictStatus, { glyph: string; title: string } | null> = {
+  unverified: null,
+  confirmed: { glyph: "✓", title: "Verified — source confirms this finding" },
+  weak: { glyph: "?", title: "Weak — thin or insufficient evidence" },
+  contested: { glyph: "±", title: "Contested — verifiers disagree" },
+  refuted: { glyph: "✗", title: "Refuted — source does not support this finding" },
+};
+
+function VerifyMark({ status }: { status: FindingVerdictStatus | undefined }) {
+  const mark = status ? VERDICT_MARK[status] : null;
+  if (!mark) return null;
+  return (
+    <span className={`cv-verify-mark cv-verify-${status}`} title={mark.title} aria-label={mark.title}>
+      {mark.glyph}
+    </span>
+  );
+}
+
 function SubProblemCell({
   sub,
   findings,
+  findingStatuses,
 }: {
   sub: SubProblemSummary;
   findings: FindingSummary[];
+  findingStatuses?: Record<string, FindingVerdictStatus>;
 }) {
   const top = findings.slice(0, 3);
   const more = findings.length - top.length;
@@ -357,6 +386,7 @@ function SubProblemCell({
         ) : (
           top.map((f) => (
             <div key={f.id} className="cv-research-item">
+              <VerifyMark status={findingStatuses?.[f.id]} />
               {f.title}
             </div>
           ))
@@ -369,20 +399,53 @@ function SubProblemCell({
   );
 }
 
-function ProposalGroup({ chains }: { chains: ProposalChain[] }) {
+function ProposalGroup({
+  chains,
+  proposalEvidence,
+}: {
+  chains: ProposalChain[];
+  proposalEvidence?: Record<string, ProposalEvidenceStrength>;
+}) {
   if (chains.length === 0) {
     return <div className="cv-prop-empty">No proposal yet for this sub-problem.</div>;
   }
   return (
     <div className="cv-prop-group">
       {chains.map((c) => (
-        <Chain key={c.proposalId} chain={c} />
+        <Chain key={c.proposalId} chain={c} evidence={proposalEvidence?.[c.proposalId]} />
       ))}
     </div>
   );
 }
 
-function Chain({ chain }: { chain: ProposalChain }) {
+const EVIDENCE_LABEL: Record<ProposalEvidenceStrength["label"], string> = {
+  unbacked: "no findings cited",
+  unverified: "evidence unverified",
+  refuted: "evidence refuted",
+  partial: "evidence partly confirmed",
+  strong: "evidence confirmed",
+};
+
+function EvidenceBadge({ evidence }: { evidence: ProposalEvidenceStrength | undefined }) {
+  if (!evidence || evidence.citedTotal === 0) return null;
+  const { confirmedCount, citedTotal, label } = evidence;
+  return (
+    <div className={`cv-evidence cv-evidence-${label}`} title={EVIDENCE_LABEL[label]}>
+      <span className="cv-evidence-rate">
+        ✓ {confirmedCount}/{citedTotal}
+      </span>
+      <span className="cv-evidence-label">{EVIDENCE_LABEL[label]}</span>
+    </div>
+  );
+}
+
+function Chain({
+  chain,
+  evidence,
+}: {
+  chain: ProposalChain;
+  evidence?: ProposalEvidenceStrength;
+}) {
   const dead = chain.status === "rejected" || chain.status === "withdrawn";
   const total = chain.voteCountYes + chain.voteCountNo;
   const pct = total > 0 ? Math.round((chain.voteCountYes / total) * 100) : 0;
@@ -393,6 +456,7 @@ function Chain({ chain }: { chain: ProposalChain }) {
       <div className="cv-prop-label">PROPOSAL · {chain.createdByDisplayName}</div>
       <div className="cv-prop-head">{chain.summary}</div>
       <div className="cv-prop-desc">{chain.fullProposal.split("\n")[0]?.slice(0, 220)}</div>
+      <EvidenceBadge evidence={evidence} />
 
       <ChainStage label="CRITIQUE" cls="cv-stage-critique" post={chain.critique} />
       <ChainStage label="STEELMAN" cls="cv-stage-steel" post={chain.steelman} />

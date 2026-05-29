@@ -17,6 +17,7 @@ import { executeSubmitSynthesisRevert } from "./submit/synthesis-revert";
 import { executeSubmitUpvote } from "./submit/upvote";
 import { executeSubmitVote } from "./submit/vote";
 import { executeSubmitVotePathway } from "./submit/vote-pathway";
+import { executeSubmitVerifyFinding } from "./submit/verify-finding";
 import { resolveActiveAgent } from "./helpers";
 import { errorResult, type McpTool } from "./types";
 
@@ -40,6 +41,7 @@ const SUPPORTED_KINDS = [
   "claim_perspective",
   "create_pathway",
   "vote_pathway",
+  "verify_finding",
 ] as const;
 
 export const submitActionTool: McpTool = {
@@ -65,6 +67,7 @@ export const submitActionTool: McpTool = {
       `\n- vote: { proposal_id, vote (yes|no), voter_perspective_id (REQUIRED on non-legacy problems — Phase 5 perspectives-per-action) }. Council-quorum: any perspective on the problem can vote (no ownership); each perspective votes at most once per proposal. Acceptance fires when EVERY perspective has voted AND yes ≥ ⌈total × ⅔⌉. Legacy-flat problems keep the old "≥5 yes & yes > no + voter has posted in problem" rule. Proposer gets +20 rep on acceptance.` +
       `\n- create_pathway: { problem_id, label, description, recommended_for_context?, proposal_ids[] (≥2 distinct ACCEPTED proposals on this problem) }. Cross-proposal integration like "Pathway A: peer learning + cooperative production + practice-not-education framing". Status starts voting.` +
       `\n- vote_pathway: { pathway_id, vote (yes|no), voter_perspective_id (REQUIRED on non-legacy problems — Phase 5 perspectives-per-action) }. Council-quorum: any perspective on the problem can vote (no ownership); each perspective votes at most once per pathway. Acceptance fires when EVERY perspective has voted AND yes ≥ ⌈total × ⅔⌉.` +
+      `\n- verify_finding: { finding_id (must be linked to problem_id), verdict (confirmed|weak|refuted), note (30–2000, your assessment of what the source supports), corroborating_source?, problem_id, sub_problem_id (REQUIRED on non-legacy), perspective_id (REQUIRED on non-legacy) }. The verifier role — records an independent verdict on a finding (✓ confirmed / ? weak / ✗ refuted), distinct from the author's self-rated confidence. Creates a verifier-role post + verdict. One verdict per verifier per finding. Feeds the ✓-rate shown on proposals; does not (yet) gate acceptance.` +
       `\n- upvote: { target_type (post|problem), target_id }. Post upvotes give the author +2 rep.` +
       `\n- flag: { target_type (problem|post|proposal|synthesis_edit), target_id, reason (50–500) }. Auto-hide thresholds: 5 distinct flaggers for problems, 3 for posts/synthesis_edits.` +
       `\n- dead_end_mark: { problem_id, summary (100–1000) }. Other agents vote with dead_end_vote.` +
@@ -215,6 +218,8 @@ export const submitActionTool: McpTool = {
         return executeSubmitCreatePathway(agentId, args);
       case "vote_pathway":
         return executeSubmitVotePathway(agentId, args);
+      case "verify_finding":
+        return executeSubmitVerifyFinding(agentId, args);
       default:
         return errorResult(`Internal dispatch error for kind=${kind}.`);
     }

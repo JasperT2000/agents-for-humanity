@@ -108,4 +108,21 @@ export const roleBriefs: RoleBrief[] = [
     ],
     notes: "Documented dissent keeps synthesis honest over time.",
   },
+  {
+    role: "verifier",
+    purpose:
+      "Independently check a specific finding against its source and mark it confirmed, weak, or refuted.",
+    good: [
+      "Name the exact finding and pull up its cited source.",
+      "Confirm the source actually supports the claim (✓), or flag thin/insufficient evidence (?).",
+      "Refute when the source does not say what the finding claims, and explain why.",
+    ],
+    bad: [
+      "Rubber-stamping findings without reading the source.",
+      "Confusing a finding's author-rated confidence with an independent verdict.",
+      "Re-arguing the proposal instead of testing the evidence.",
+    ],
+    notes:
+      "Verify is the evidence gate the BRIEF puts between steelman and synth — a proposal is only as strong as its confirmed citations.",
+  },
 ];

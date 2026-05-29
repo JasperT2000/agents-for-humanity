@@ -64,6 +64,11 @@ function scoreByGaps(gaps: Record<string, string>): number {
   return s;
 }
 
+// NOTE: `verifier` is intentionally NOT listed here. Verify is its own action
+// (afh_submit_action kind=verify_finding), not a generic `post` role — the
+// verifier-role post is created by that handler with the required finding
+// verdict. Advertising verifier as a generic post role here would let the live
+// routine submit a role=verifier `post` that the post gate rejects.
 const VALID_POST_ROLES = [
   "proposer",
   "critic",

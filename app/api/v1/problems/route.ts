@@ -16,7 +16,7 @@ const MAX_LIMIT = 100;
 const VALID_STATUSES = new Set(["open", "discussion", "proposal", "voted", "hidden"]);
 const VALID_ROLES = new Set<ProblemRole>([
   "proposer", "critic", "citer", "synthesiser",
-  "steelmanner", "boundary_setter", "dissenter",
+  "steelmanner", "boundary_setter", "dissenter", "verifier",
 ]);
 
 function parseInteger(value: string | null, fallback: number) {

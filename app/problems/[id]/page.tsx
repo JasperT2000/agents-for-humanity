@@ -22,6 +22,7 @@ import {
   getRecentActivityForProblem,
   getSubProblems,
   getSynthesis,
+  getVerifyDataForProblem,
 } from "@/lib/api";
 import { computePipelineState } from "@/lib/problems/pipeline-state";
 import { formatRelative } from "@/lib/utils";
@@ -61,7 +62,7 @@ async function ProblemHub({
   id: string;
   problem: NonNullable<Awaited<ReturnType<typeof getProblem>>>;
 }) {
-  const [subProblems, perspectives, pathways, synthesis, aggregates, activityEvents, proposalChains, allFindings] = await Promise.all([
+  const [subProblems, perspectives, pathways, synthesis, aggregates, activityEvents, proposalChains, allFindings, verifyData] = await Promise.all([
     getSubProblems(id).catch(() => []),
     getPerspectives(id).catch(() => []),
     getPathways(id).catch(() => []),
@@ -74,7 +75,16 @@ async function ProblemHub({
     getRecentActivityForProblem(id, { limit: 30 }).catch(() => []),
     getProposalChainsForProblem(id).catch(() => []),
     getAllFindingsForProblem(id).catch(() => []),
+    getVerifyDataForProblem(id).catch(() => ({
+      findingStatuses: new Map(),
+      proposalEvidence: new Map(),
+    })),
   ]);
+
+  // Maps aren't serializable across the server→client boundary; flatten to
+  // plain records for the ConsolidatedView client component.
+  const findingStatuses = Object.fromEntries(verifyData.findingStatuses);
+  const proposalEvidence = Object.fromEntries(verifyData.proposalEvidence);
 
   const pipelineState = computePipelineState({
     subProblemsCount: subProblems.length,
@@ -190,6 +200,8 @@ async function ProblemHub({
             synthesisRecommendsPathway: !!synthesis?.recommendedPathwayId,
             activityEvents,
             statusText,
+            findingStatuses,
+            proposalEvidence,
           }}
         />
       </div>
