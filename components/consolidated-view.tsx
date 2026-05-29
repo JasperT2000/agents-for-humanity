@@ -36,6 +36,8 @@ interface ConsolidatedViewProps {
   findingStatuses?: Record<string, FindingVerdictStatus>;
   /** Phase 5 verify role: proposal id → evidence-strength summary. */
   proposalEvidence?: Record<string, ProposalEvidenceStrength>;
+  /** Phase 5 convergence weaving: every pathway with the proposals it integrates. */
+  pathwaysAll?: Array<{ id: string; label: string; status: string; proposalIds: string[] }>;
 }
 
 const KIT_ITEMS: Array<{ key: string; name: string; icon: React.ReactElement }> = [
@@ -299,6 +301,9 @@ function Overlay({ data, onClose }: { data: ConsolidatedViewProps; onClose: () =
           )}
         </div>
 
+        {/* convergence weaving: accepted proposals curve outward to meet at pathways */}
+        <ConvergenceWeave chains={data.proposalChains} pathways={data.pathwaysAll ?? []} />
+
         {/* convergence: Living Solution + Impl Kit */}
         <section className="cv-convergence">
           <div className="cv-ls">
@@ -520,6 +525,103 @@ function Chain({
         </span>
       </div>
     </div>
+  );
+}
+
+// Convergence weaving (Phase 5): accepted proposals on a top rail curve downward
+// to meet at the pathway(s) that integrate them. Pure render from props with a
+// normalised SVG viewBox (preserveAspectRatio="none" stretches it to the panel),
+// so chip left% and curve endpoints stay aligned at any width — no DOM measuring.
+function ConvergenceWeave({
+  chains,
+  pathways,
+}: {
+  chains: ProposalChain[];
+  pathways: Array<{ id: string; label: string; status: string; proposalIds: string[] }>;
+}) {
+  const acceptedById = new Map(
+    chains.filter((c) => c.status === "accepted").map((c) => [c.proposalId, c]),
+  );
+
+  // Only weave pathways that integrate ≥1 accepted proposal; within each, only
+  // the accepted members actually converge.
+  const woven = pathways
+    .map((p) => ({ ...p, memberIds: p.proposalIds.filter((id) => acceptedById.has(id)) }))
+    .filter((p) => p.memberIds.length > 0);
+  const proposalIds = [...new Set(woven.flatMap((p) => p.memberIds))];
+
+  if (proposalIds.length === 0 || woven.length === 0) {
+    return (
+      <section className="cv-weave cv-weave-empty">
+        <div className="cv-weave-title">Convergence</div>
+        <p className="cv-weave-hint">
+          Once proposals are accepted and woven into pathways, their threads converge here.
+        </p>
+      </section>
+    );
+  }
+
+  const TOP_Y = 70;
+  const BOT_Y = 930;
+  const xFor = (i: number, n: number) => ((i + 0.5) / n) * 1000;
+  const propX = new Map(proposalIds.map((id, i) => [id, xFor(i, proposalIds.length)]));
+  const pathX = new Map(woven.map((p, j) => [p.id, xFor(j, woven.length)]));
+
+  const curves: Array<{ key: string; d: string; accepted: boolean }> = [];
+  for (const p of woven) {
+    const qx = pathX.get(p.id)!;
+    const c1y = TOP_Y + (BOT_Y - TOP_Y) * 0.42;
+    const c2y = BOT_Y - (BOT_Y - TOP_Y) * 0.42;
+    for (const mid of p.memberIds) {
+      const px = propX.get(mid)!;
+      curves.push({
+        key: `${p.id}:${mid}`,
+        d: `M ${px} ${TOP_Y} C ${px} ${c1y}, ${qx} ${c2y}, ${qx} ${BOT_Y}`,
+        accepted: p.status === "accepted",
+      });
+    }
+  }
+
+  return (
+    <section className="cv-weave">
+      <div className="cv-weave-title">Convergence</div>
+      <div className="cv-weave-stage">
+        <svg
+          className="cv-weave-svg"
+          viewBox="0 0 1000 1000"
+          preserveAspectRatio="none"
+          aria-hidden
+        >
+          {curves.map((c) => (
+            <path
+              key={c.key}
+              d={c.d}
+              className={`cv-weave-curve ${c.accepted ? "is-accepted" : ""}`}
+            />
+          ))}
+        </svg>
+        <div className="cv-weave-row cv-weave-top">
+          {proposalIds.map((id) => (
+            <div key={id} className="cv-weave-node cv-weave-prop" style={{ left: `${propX.get(id)! / 10}%` }}>
+              <span className="cv-weave-prop-label">{acceptedById.get(id)!.summary}</span>
+              <span className="cv-weave-dot" aria-hidden />
+            </div>
+          ))}
+        </div>
+        <div className="cv-weave-row cv-weave-bot">
+          {woven.map((p) => (
+            <div
+              key={p.id}
+              className={`cv-weave-node cv-weave-path ${p.status === "accepted" ? "is-accepted" : ""}`}
+              style={{ left: `${pathX.get(p.id)! / 10}%` }}
+            >
+              <span className="cv-weave-dot" aria-hidden />
+              <span className="cv-weave-path-label">{p.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 

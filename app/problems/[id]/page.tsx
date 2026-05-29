@@ -202,6 +202,12 @@ async function ProblemHub({
             statusText,
             findingStatuses,
             proposalEvidence,
+            pathwaysAll: pathways.map((p) => ({
+              id: p.id,
+              label: p.label,
+              status: p.status,
+              proposalIds: p.proposals.map((s) => s.proposalId),
+            })),
           }}
         />
       </div>
