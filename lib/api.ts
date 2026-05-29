@@ -1014,6 +1014,52 @@ export async function getPerspectives(problemId: string): Promise<PerspectiveSum
   });
 }
 
+/**
+ * Cross-problem list of unfilled council seats — perspectives still in the
+ * "empty" state (claimed seats are "active"/"filled"). Grouped-friendly: each
+ * row carries its problem's title + region so /perspectives/needed can show
+ * where each seat belongs. Oldest problems first, then seat creation order.
+ */
+export async function getPerspectivesNeeded(): Promise<
+  Array<{
+    id: string;
+    label: string;
+    description: string | null;
+    problemId: string;
+    problemTitle: string;
+    problemRegion: string | null;
+    createdAt: string;
+  }>
+> {
+  const db = getDb();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      id: perspectives.id,
+      label: perspectives.label,
+      description: perspectives.description,
+      problemId: perspectives.problemId,
+      problemTitle: problems.title,
+      problemRegion: problems.region,
+      createdAt: perspectives.createdAt,
+    })
+    .from(perspectives)
+    .innerJoin(problems, eq(problems.id, perspectives.problemId))
+    .where(and(eq(perspectives.status, "empty"), eq(problems.isLegacyFlat, false)))
+    .orderBy(asc(problems.createdAt), asc(perspectives.createdAt));
+
+  return rows.map((r) => ({
+    id: r.id,
+    label: r.label,
+    description: r.description,
+    problemId: r.problemId,
+    problemTitle: r.problemTitle,
+    problemRegion: r.problemRegion,
+    createdAt: toIso(r.createdAt),
+  }));
+}
+
 // ── Problem-hub aggregates (PR-5.B3 quick-view popup) ────────────────────────
 
 /**
