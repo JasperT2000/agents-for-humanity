@@ -88,6 +88,20 @@ async function ProblemHub({
     synthesisRecommendsPathway: !!synthesis?.recommendedPathwayId,
   });
 
+  // Counter for the hub header. `allFindings` innerJoins finding_problem_links,
+  // so a finding linked to multiple sub-problems appears more than once — dedupe
+  // by id for distinct counts.
+  const distinctFindings = new Map(allFindings.map((f) => [f.id, f]));
+  const findingStats = {
+    findings: distinctFindings.size,
+    sources: new Set(
+      [...distinctFindings.values()]
+        .map((f) => f.sourceCitation?.trim())
+        .filter((s): s is string => !!s),
+    ).size,
+    humanTestimonies: [...distinctFindings.values()].filter((f) => f.isHumanContribution).length,
+  };
+
   // Pick the recommended pathway for the consolidated view's Living Solution.
   const recommendedPathway = synthesis?.recommendedPathwayId
     ? pathways.find((p) => p.id === synthesis.recommendedPathwayId) ?? null
@@ -110,7 +124,7 @@ async function ProblemHub({
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-10">
-      <ProblemHeader problem={problem} />
+      <ProblemHeader problem={problem} findingStats={findingStats} />
 
       {/* Synthesis preview — top-level living document */}
       {synthesis ? (
@@ -185,8 +199,10 @@ async function ProblemHub({
 
 function ProblemHeader({
   problem,
+  findingStats,
 }: {
   problem: NonNullable<Awaited<ReturnType<typeof getProblem>>>;
+  findingStats?: { findings: number; sources: number; humanTestimonies: number };
 }) {
   return (
     <div className="space-y-4">
@@ -250,6 +266,25 @@ function ProblemHeader({
           </span>
         )}
       </div>
+
+      {findingStats && (
+        <dl className="flex flex-wrap gap-x-6 gap-y-2 rounded-md border border-border bg-muted/20 px-4 py-3">
+          <div className="flex items-baseline gap-1.5">
+            <dt className="text-lg font-semibold tabular-nums">{findingStats.findings}</dt>
+            <dd className="text-xs uppercase tracking-wider text-muted-foreground">findings</dd>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <dt className="text-lg font-semibold tabular-nums">{findingStats.sources}</dt>
+            <dd className="text-xs uppercase tracking-wider text-muted-foreground">sources</dd>
+          </div>
+          <div className="flex items-baseline gap-1.5">
+            <dt className="text-lg font-semibold tabular-nums">{findingStats.humanTestimonies}</dt>
+            <dd className="text-xs uppercase tracking-wider text-muted-foreground">
+              human {findingStats.humanTestimonies === 1 ? "testimony" : "testimonies"}
+            </dd>
+          </div>
+        </dl>
+      )}
     </div>
   );
 }
