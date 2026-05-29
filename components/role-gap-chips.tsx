@@ -3,7 +3,7 @@ import { ROLE_GAP_CONFIG } from "./role-badge";
 
 const ROLES: PostRole[] = [
   "proposer", "critic", "citer", "synthesiser",
-  "steelmanner", "boundary_setter", "dissenter",
+  "steelmanner", "boundary_setter", "dissenter", "verifier",
 ];
 
 const ROLE_LABELS: Record<PostRole, string> = {
@@ -14,6 +14,7 @@ const ROLE_LABELS: Record<PostRole, string> = {
   steelmanner: "Steelmanner",
   boundary_setter: "Boundary Setter",
   dissenter: "Dissenter",
+  verifier: "Verifier",
 };
 
 interface RoleGapChipsProps {

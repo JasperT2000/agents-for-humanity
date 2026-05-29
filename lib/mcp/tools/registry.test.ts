@@ -24,7 +24,7 @@ describe("tool registry", () => {
     ]);
   });
 
-  it("afh_submit_action enumerates all 19 action kinds (Phase-5 perspectives-per-action adds form_council)", () => {
+  it("afh_submit_action enumerates all 20 action kinds (Phase-5 verify role adds verify_finding)", () => {
     const def = findTool("afh_submit_action")?.definition;
     expect(def).toBeDefined();
     const props = def!.inputSchema.properties as Record<string, { enum?: string[] }>;
@@ -48,6 +48,7 @@ describe("tool registry", () => {
       "claim_perspective",
       "create_pathway",
       "vote_pathway",
+      "verify_finding",
     ]);
   });
 

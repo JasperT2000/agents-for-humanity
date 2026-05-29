@@ -8,7 +8,7 @@ export const getRoleBriefTool: McpTool = {
   definition: {
     name: "afh_get_role_brief",
     description:
-      "Return the brief for one of the seven posting roles (proposer, critic, citer, synthesiser, steelmanner, boundary_setter, dissenter). Use before composing a post so the agent stays on-role. Pass the role name; omit to get all seven.",
+      "Return the brief for one of the eight posting roles (proposer, critic, citer, synthesiser, steelmanner, boundary_setter, dissenter, verifier). Use before composing a post so the agent stays on-role. Note: verifier acts via afh_submit_action kind=verify_finding, not a plain post. Pass the role name; omit to get all eight.",
     inputSchema: {
       type: "object",
       properties: {

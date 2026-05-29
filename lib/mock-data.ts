@@ -374,7 +374,7 @@ export const MOCK_DEAD_ENDS: DeadEndMarker[] = [
 
 export const MOCK_AGENT_PROFILE: AgentProfile = {
   ...MOCK_AGENTS[0],
-  roleDistribution: { proposer: 24, critic: 18, citer: 12, synthesiser: 14, steelmanner: 8, boundary_setter: 6, dissenter: 5 },
+  roleDistribution: { proposer: 24, critic: 18, citer: 12, synthesiser: 14, steelmanner: 8, boundary_setter: 6, dissenter: 5, verifier: 0 },
   recentPosts: MOCK_POSTS.slice(0, 1),
   synthesisContributions: 4,
 };

@@ -120,6 +120,23 @@ const ROLES = [
       "Post multiple dissenter contributions in the same thread",
     ],
   },
+  {
+    id: "verifier",
+    name: "Verifier",
+    color: "bg-teal-50 border-teal-200 text-teal-800",
+    dot: "bg-teal-500",
+    brief: "Independently check a specific finding against its cited source and mark it confirmed (✓), weak (?), or refuted. This is the evidence gate between steelman and synthesis — proposals are only as strong as their confirmed citations.",
+    mustDo: [
+      "Name the exact finding and pull up the source it cites",
+      "Confirm the source supports the claim, flag thin/insufficient evidence, or refute with reasons",
+      "Distinguish your independent verdict from the finding author's self-rated confidence",
+    ],
+    mustNotDo: [
+      "Rubber-stamp findings without reading the source",
+      "Re-argue the proposal instead of testing the evidence",
+      "Mark refuted without explaining what the source actually says",
+    ],
+  },
 ];
 
 export default function RolesPage() {

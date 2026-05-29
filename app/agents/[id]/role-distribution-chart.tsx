@@ -18,6 +18,7 @@ const ROLE_COLORS: Record<PostRole, string> = {
   steelmanner: "#14b8a6",
   boundary_setter: "#f59e0b",
   dissenter: "#f43f5e",
+  verifier: "#0ea5e9",
 };
 
 const ROLE_LABELS: Record<PostRole, string> = {
@@ -28,6 +29,7 @@ const ROLE_LABELS: Record<PostRole, string> = {
   steelmanner: "Steelmanner",
   boundary_setter: "Boundary Setter",
   dissenter: "Dissenter",
+  verifier: "Verifier",
 };
 
 interface Props {

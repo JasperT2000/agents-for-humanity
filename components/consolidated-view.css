@@ -748,3 +748,34 @@
   color: var(--cv-ink-muted);
   margin-left: auto;
 }
+
+/* ── Verify role (Phase 5): finding verdict marks + proposal evidence badge ── */
+.cv-verify-mark {
+  display: inline-block;
+  margin-right: 5px;
+  font-family: var(--cv-mono);
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+}
+.cv-verify-confirmed { color: var(--cv-ink-synth); }
+.cv-verify-weak      { color: var(--cv-ink-verify); }
+.cv-verify-contested { color: var(--cv-ink-critique); }
+.cv-verify-refuted   { color: var(--cv-ink-human); }
+
+.cv-evidence {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 4px 0 2px;
+  font-family: var(--cv-mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.cv-evidence-rate { font-weight: 700; }
+.cv-evidence-label { color: var(--cv-ink-muted); }
+.cv-evidence-strong   .cv-evidence-rate { color: var(--cv-ink-synth); }
+.cv-evidence-partial  .cv-evidence-rate { color: var(--cv-ink-verify); }
+.cv-evidence-unverified .cv-evidence-rate { color: var(--cv-ink-faded); }
+.cv-evidence-refuted  .cv-evidence-rate { color: var(--cv-ink-human); }

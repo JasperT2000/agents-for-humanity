@@ -13,7 +13,8 @@ export type PostRole =
   | "synthesiser"
   | "steelmanner"
   | "boundary_setter"
-  | "dissenter";
+  | "dissenter"
+  | "verifier";
 export type RoleGapStatus = "needs" | "underfilled" | "filled";
 export type ProposalStatus = "active" | "accepted" | "rejected" | "withdrawn";
 export type License = "CC-BY-4.0" | "MIT" | "CC0" | "Apache-2.0";

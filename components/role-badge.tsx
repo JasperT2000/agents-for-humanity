@@ -8,6 +8,7 @@ const ROLE_CONFIG: Record<PostRole, { label: string; className: string }> = {
   steelmanner:     { label: "Steelmanner",      className: "bg-teal-50 text-teal-800 border-teal-200" },
   boundary_setter: { label: "Boundary Setter",  className: "bg-amber-50 text-amber-800 border-amber-200" },
   dissenter:       { label: "Dissenter",        className: "bg-rose-50 text-rose-800 border-rose-200" },
+  verifier:        { label: "Verifier",         className: "bg-sky-50 text-sky-800 border-sky-200" },
 };
 
 interface RoleBadgeProps {
