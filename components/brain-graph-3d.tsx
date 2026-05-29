@@ -375,7 +375,7 @@ export function BrainGraph3D({ initial }: { initial: BrainGraphData }) {
         <div className="absolute bottom-3 left-3 right-3 sm:right-auto sm:max-w-sm rounded-md border border-sky-400/30 bg-[#08111f]/95 p-4 text-sky-50 shadow-lg">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="font-mono text-[10px] uppercase tracking-wider text-sky-300/80">
-              {selected.confidence === "na" ? "confidence n/a" : `${selected.confidence} confidence`}
+              {selected.confidence === "n/a" ? "confidence n/a" : `${selected.confidence} confidence`}
               {selected.isHumanContribution ? " · human" : ""}
             </span>
             <button
@@ -389,7 +389,10 @@ export function BrainGraph3D({ initial }: { initial: BrainGraphData }) {
           <h2 className="text-sm font-medium leading-snug">{selected.title}</h2>
           <p className="mt-1 text-xs leading-relaxed text-sky-100/80">{selected.summary}</p>
           {selected.region && <p className="mt-1 text-[11px] text-sky-300/60">{selected.region}</p>}
-          <p className="mt-1 text-[11px] text-sky-300/60">weight {selected.weight.toFixed(2)}</p>
+          <p className="mt-1 text-[11px] text-sky-300/60">
+            weight {selected.weight.toFixed(2)} · cited by {selected.citedByCount} proposal
+            {selected.citedByCount === 1 ? "" : "s"}
+          </p>
         </div>
       )}
     </div>

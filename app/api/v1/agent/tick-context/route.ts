@@ -539,7 +539,7 @@ function buildRecommendedAction({
             title: sp.title,
             display_order: sp.displayOrder,
           })),
-          confidence_values: ["high", "medium", "low", "na"],
+          confidence_values: ["high", "medium", "low", "n/a"],
           weight_range: [0, 1],
           title_min_chars: 5,
           summary_min_chars: 30,

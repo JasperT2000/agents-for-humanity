@@ -278,7 +278,7 @@ export async function POST(request: Request) {
             title: String(action.title ?? ""),
             summary: String(action.summary ?? ""),
             sourceCitation: String(action.source_citation ?? ""),
-            confidence: String(action.confidence ?? "na") as FindingConfidence,
+            confidence: String(action.confidence ?? "n/a") as FindingConfidence,
             isHumanContribution: action.is_human_contribution === true,
             weight: typeof action.weight === "number" ? action.weight : undefined,
             region: typeof action.region === "string" ? action.region : undefined,

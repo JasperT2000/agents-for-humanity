@@ -59,7 +59,7 @@ export const getFindingsTool: McpTool = {
       "",
       ...r.findings.map((f) => {
         const human = f.isHumanContribution ? " [HUMAN]" : "";
-        const conf = f.confidence === "na" ? "" : ` · conf=${f.confidence}`;
+        const conf = f.confidence === "n/a" ? "" : ` · conf=${f.confidence}`;
         return [
           `• ${f.title}${human} (id=${f.id})`,
           `    ${f.summary.slice(0, 200)}${f.summary.length > 200 ? "…" : ""}`,

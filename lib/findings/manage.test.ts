@@ -24,7 +24,7 @@ describe("manage helpers — pure", () => {
   });
 
   it("FINDING_CONFIDENCE_VALUES matches the DB check constraint exactly", () => {
-    expect(FINDING_CONFIDENCE_VALUES).toEqual(["high", "medium", "low", "na"]);
+    expect(FINDING_CONFIDENCE_VALUES).toEqual(["high", "medium", "low", "n/a"]);
   });
 
   it("FINDING_EDGE_TYPES matches the DB check constraint exactly", () => {

@@ -152,7 +152,7 @@ export interface ActivityEventSummary {
 }
 
 /** Phase 1: finding (global structured citation / evidence). */
-export type FindingConfidence = "high" | "medium" | "low" | "na";
+export type FindingConfidence = "high" | "medium" | "low" | "n/a";
 export interface FindingSummary {
   id: string;
   title: string;

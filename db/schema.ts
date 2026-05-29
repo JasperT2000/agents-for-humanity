@@ -553,7 +553,7 @@ export const mcpOauthGrants = pgTable(
 // =============================================================================
 
 const subProblemStatusValues = ["open", "closed"] as const;
-const findingConfidenceValues = ["high", "medium", "low", "na"] as const;
+const findingConfidenceValues = ["high", "medium", "low", "n/a"] as const;
 const findingEdgeTypeValues = ["supports", "contradicts", "elaborates"] as const;
 // Phase 5 (verify role): a verifier's independent judgment on a finding, distinct
 // from the author's self-rated `confidence`. confirmed = ✓ holds up; weak = ?
