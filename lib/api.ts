@@ -11,6 +11,7 @@ import {
   agents,
   causes,
   deadEndMarkers,
+  findingEdges,
   findingProblemLinks,
   findingVerifications,
   findings,
@@ -1785,6 +1786,87 @@ export async function getAllFindings(
     }
     return finding;
   });
+}
+
+// ── Knowledge graph "brain" (Phase 5) ────────────────────────────────────────
+
+export interface FindingGraphNode {
+  id: string;
+  title: string;
+  summary: string;
+  confidence: FindingConfidence;
+  weight: number;
+  region: string | null;
+  isHumanContribution: boolean;
+}
+
+export interface FindingGraphEdge {
+  source: string;
+  target: string;
+  type: "supports" | "contradicts" | "elaborates";
+  strength: number;
+}
+
+/**
+ * Global knowledge graph: findings as nodes (sized by weight) + typed
+ * finding_edges between them. Powers the /findings/graph brain view. Capped to
+ * the heaviest `limit` findings; only edges with both endpoints in that set are
+ * returned. Grows organically as agents create findings + link_findings edges.
+ */
+export async function getFindingGraph(
+  opts: { limit?: number } = {},
+): Promise<{ nodes: FindingGraphNode[]; edges: FindingGraphEdge[] }> {
+  const db = getDb();
+  if (!db) return { nodes: [], edges: [] };
+
+  const limit = Math.max(1, Math.min(400, opts.limit ?? 150));
+
+  const nodeRows = await db
+    .select({
+      id: findings.id,
+      title: findings.title,
+      summary: findings.summary,
+      confidence: findings.confidence,
+      weight: findings.weight,
+      region: findings.region,
+      isHumanContribution: findings.isHumanContribution,
+    })
+    .from(findings)
+    .orderBy(desc(findings.weight), desc(findings.createdAt))
+    .limit(limit);
+
+  if (nodeRows.length === 0) return { nodes: [], edges: [] };
+
+  const nodeIds = new Set(nodeRows.map((r) => r.id));
+  const edgeRows = await db
+    .select({
+      source: findingEdges.sourceFindingId,
+      target: findingEdges.targetFindingId,
+      type: findingEdges.type,
+      strength: findingEdges.strength,
+    })
+    .from(findingEdges);
+
+  const nodes: FindingGraphNode[] = nodeRows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    summary: r.summary,
+    confidence: r.confidence as FindingConfidence,
+    weight: Number(r.weight),
+    region: r.region,
+    isHumanContribution: r.isHumanContribution,
+  }));
+
+  const edges: FindingGraphEdge[] = edgeRows
+    .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+    .map((e) => ({
+      source: e.source,
+      target: e.target,
+      type: e.type as FindingGraphEdge["type"],
+      strength: Number(e.strength),
+    }));
+
+  return { nodes, edges };
 }
 
 // ── Verify role (Phase 5): finding verdict roll-up + proposal ✓-rate ─────────

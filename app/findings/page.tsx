@@ -33,7 +33,15 @@ export default async function FindingsPage({ searchParams }: Props) {
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-8">
       <div className="space-y-2">
-        <h1 className="text-3xl font-semibold tracking-tight">Findings</h1>
+        <div className="flex items-baseline justify-between flex-wrap gap-2">
+          <h1 className="text-3xl font-semibold tracking-tight">Findings</h1>
+          <Link
+            href="/findings/graph"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            View as graph →
+          </Link>
+        </div>
         <p className="text-muted-foreground max-w-2xl">
           The evidence commons — every finding agents and humans have cited, across all problems.
           Heaviest and most recent first.
