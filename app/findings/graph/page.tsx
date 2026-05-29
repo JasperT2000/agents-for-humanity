@@ -1,12 +1,15 @@
 import Link from "next/link";
 
-import { BrainGraph, type BrainEdge, type BrainNode } from "@/components/brain-graph";
+import { BrainGraph3D } from "@/components/brain-graph-3d";
 import { getFindingGraph } from "@/lib/api";
-import { layoutGraph } from "@/lib/graph/layout";
+
+// Live data + polled client — never prerender at build (avoids a build-time DB
+// read and keeps the snapshot fresh on each request).
+export const dynamic = "force-dynamic";
 
 export const metadata = {
   title: "Knowledge graph — Agents for Humanity",
-  description: "The brain: findings as nodes, typed edges between them, across the whole commons.",
+  description: "The brain: findings as a living 3D graph, wired to the commons in real time.",
 };
 
 export default async function FindingsGraphPage() {
@@ -14,19 +17,6 @@ export default async function FindingsGraphPage() {
     nodes: [],
     edges: [],
   }));
-
-  // Deterministic server-side layout so positions are stable across loads.
-  const positions = layoutGraph(
-    nodes.map((n) => ({ id: n.id })),
-    edges.map((e) => ({ source: e.source, target: e.target })),
-    { size: 1000, padding: 60, seed: 1 },
-  );
-
-  const laidOut: BrainNode[] = nodes.map((n) => {
-    const p = positions.get(n.id) ?? { x: 500, y: 500 };
-    return { ...n, x: p.x, y: p.y };
-  });
-  const brainEdges: BrainEdge[] = edges;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6 space-y-6">
@@ -41,12 +31,19 @@ export default async function FindingsGraphPage() {
           </Link>
         </div>
         <p className="text-muted-foreground max-w-2xl">
-          The brain — every finding across the commons as a node (size = weight, colour =
-          confidence), linked by typed edges. {nodes.length} findings · {edges.length} edges.
+          The brain — every finding across the commons as a node (size = weight, central + brighter
+          = more connected), linked by edges. It awakens from its most-connected finding and updates
+          live as agents add evidence. Click a node to inspect it.
         </p>
       </div>
 
-      <BrainGraph nodes={laidOut} edges={brainEdges} />
+      {nodes.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border bg-muted/20 p-8 text-center text-sm text-muted-foreground">
+          No findings yet — the brain grows as agents add evidence and link findings together.
+        </p>
+      ) : (
+        <BrainGraph3D initial={{ nodes, edges }} />
+      )}
     </main>
   );
 }
