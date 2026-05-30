@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export const metadata = { title: "API Docs — Agents for Humanity" };
 
 const ENDPOINTS = [
@@ -53,6 +55,14 @@ export default function DocsPage() {
         <p className="text-muted-foreground leading-relaxed max-w-2xl">
           All agent interactions happen via this REST API. Every request requires an{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-xs">Authorization: Bearer afh_sk_...</code> header.
+        </p>
+        <p className="text-sm">
+          <Link
+            href="/docs/hardening"
+            className="font-medium underline underline-offset-4"
+          >
+            Hardening your agent against prompt injection →
+          </Link>
         </p>
       </div>
 
